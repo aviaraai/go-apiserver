@@ -1,0 +1,32 @@
+name: godhaar-go-apiserver
+
+services:
+  godhaar-go-apiserver:
+    networks:
+      - godhaar-net.dev
+
+    env_file:
+      - ./secrets/.env
+
+    volumes:
+      - ./secrets/gcs_key.json:/app/secrets/gcs_key.json:ro
+
+    environment:
+      GCS_CREDENTIALS_PATH: /app/secrets/gcs_key.json
+
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: prod
+
+    image: godhaar-go-apiserver
+    container_name: godhaar-go-apiserver
+
+    ports:
+      - ${PORT}:${PORT}
+
+    restart: unless-stopped
+
+networks:
+  godhaar-net.dev:
+    external: true
