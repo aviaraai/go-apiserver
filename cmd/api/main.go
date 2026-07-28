@@ -10,8 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/joho/godotenv"
-
 	"go-api-server/internal/config"
 	"go-api-server/internal/database"
 	"go-api-server/internal/server"
@@ -46,12 +44,11 @@ func main() {
 	config.LoggerConfig()
 	slog.Info("logger initialized")
 
-	err := godotenv.Load("./secrets/.env")
-	if err != nil {
-		slog.Error("unable to load .env", "err", err)
-		os.Exit(1)
+	path := os.Getenv("ENV_FILE")
+	if err := config.LoadEnvFile(path); err != nil {
+		slog.Info("no env file loaded, using process environment", "path", path, "err", err)
 	}
-	slog.Info("loaded .env")
+	slog.Info("loaded env file", "path", path)
 
 	cfg, err := config.Load()
 	if err != nil {

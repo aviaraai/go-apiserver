@@ -52,5 +52,6 @@ type RegisterResponse struct {
 
 type SearchResponse struct {
 	GodhaarID *string `json:"godhaar_id"`
+	Decision  string  `json:"decision"`
 	Score     float64 `json:"score"`
 }

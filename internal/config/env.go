@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/joho/godotenv"
 )
 
 type Config struct {
@@ -32,6 +35,16 @@ type Config struct {
 
 	// QR code encryption key
 	QREncryptionKey []byte
+}
+
+func LoadEnvFile(path string) error {
+	if path == "" {
+		path = filepath.Join("secrets", ".env")
+	}
+	if err := godotenv.Load(path); err != nil {
+		return err
+	}
+	return nil
 }
 
 func Load() (*Config, error) {

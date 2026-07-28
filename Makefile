@@ -1,6 +1,10 @@
 # Simple Makefile for a Go project
 
--include ./secrets/.env
+# Which env file every target reads. Override per invocation, e.g.
+#   make run ENV_FILE=./secrets/.env_local
+ENV_FILE ?= ./secrets/.env
+
+-include $(ENV_FILE)
 export
 
 # Build the application
@@ -8,18 +12,18 @@ all: build test
 
 build:
 	@echo "Building..."
-	@go build -o main.exe cmd/api/main.go
+	@go build -o main.exe ./cmd/api
 
 # Run the application
 run:
-	@go run cmd/api/main.go
+	@go run ./cmd/api
 
 # Create DB container
 docker-run:
-	@docker compose up --build
+	@docker compose --env-file $(ENV_FILE) up --build
 # Shutdown DB container
 docker-down:
-	@docker compose down
+	@docker compose --env-file $(ENV_FILE) down
 
 # Test the application
 test:
@@ -37,7 +41,7 @@ watch:
 # Clean the binary
 clean:
 	@echo "Cleaning..."
-	@rm -f main
+	@rm -f main.exe
 
 migrate-up:
 	@goose -dir migrations postgres "postgres://$(DB_USER):$(DB_PASSWORD)@$(DB_HOST):$(DB_PORT)/$(DB_DATABASE)?sslmode=$(SSL_MODE)&search_path=$(DB_SCHEMA)" up

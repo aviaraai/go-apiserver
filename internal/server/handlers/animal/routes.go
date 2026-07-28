@@ -410,6 +410,7 @@ func (h *Handler) search(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, SearchResponse{
 		GodhaarID: v.GodhaarID,
+		Decision:  v.Decision,
 		Score:     v.Score,
 	})
 }
