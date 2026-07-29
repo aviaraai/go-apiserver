@@ -139,17 +139,17 @@ func (c *HTTPClient) Register(ctx context.Context, front, muzzle []ImagePayload,
 	case http.StatusCreated, http.StatusOK:
 		var out RegisterResponse
 		if err := json.Unmarshal(rawBody, &out); err != nil {
-			return nil, responseErr(resp.StatusCode, fmt.Errorf("json parsing error, body: %w, %v", err, rawBody), fmt.Errorf("decode inference response: %w", err))
+			return nil, responseErr(resp.StatusCode, fmt.Errorf("json parsing error, body: %w, %s", err, rawBody), fmt.Errorf("decode inference response: %w", err))
 		}
 		return &out, nil
 	case http.StatusConflict:
-		return nil, responseErr(resp.StatusCode, fmt.Errorf("duplicate animal registration error, body: %w, %v", err, rawBody), ErrDuplicateAnimal)
+		return nil, responseErr(resp.StatusCode, fmt.Errorf("duplicate animal registration body: %s", rawBody), ErrDuplicateAnimal)
 	case http.StatusUnprocessableEntity:
-		return nil, responseErr(resp.StatusCode, fmt.Errorf("error, body: %w, %v", err, rawBody), withDetail(ErrPoorImageQuality, rawBody))
+		return nil, responseErr(resp.StatusCode, fmt.Errorf("body: %s", rawBody), withDetail(ErrPoorImageQuality, rawBody))
 	case http.StatusInternalServerError:
-		return nil, responseErr(resp.StatusCode, fmt.Errorf("inference server error, body: %w, %v", err, rawBody), ErrInferenceInternal)
+		return nil, responseErr(resp.StatusCode, fmt.Errorf("inference server body: %s", rawBody), ErrInferenceInternal)
 	default:
-		return nil, responseErr(resp.StatusCode, fmt.Errorf("unexpected error, body: %w, %v", err, rawBody), ErrInferenceUpstream)
+		return nil, responseErr(resp.StatusCode, fmt.Errorf("unexpected body: %s", rawBody), ErrInferenceUpstream)
 	}
 }
 
@@ -204,15 +204,15 @@ func (c *HTTPClient) Search(ctx context.Context, front, muzzle ImagePayload, can
 	case http.StatusOK:
 		var out SearchResponse
 		if err := json.Unmarshal(rawBody, &out); err != nil {
-			return nil, responseErr(resp.StatusCode, fmt.Errorf("json parsing error, body: %w, %v", err, rawBody), ErrInferenceUpstream)
+			return nil, responseErr(resp.StatusCode, fmt.Errorf("json parsing error, body: %w, %s", err, rawBody), ErrInferenceUpstream)
 		}
 		return &out, nil
 	case http.StatusUnprocessableEntity:
-		return nil, responseErr(resp.StatusCode, fmt.Errorf("error, body: %w, %v", err, rawBody), withDetail(ErrPoorImageQuality, rawBody))
+		return nil, responseErr(resp.StatusCode, fmt.Errorf("body: %s", rawBody), withDetail(ErrPoorImageQuality, rawBody))
 	case http.StatusInternalServerError:
-		return nil, responseErr(resp.StatusCode, fmt.Errorf("inference server error, body: %w, %v", err, rawBody), ErrInferenceInternal)
+		return nil, responseErr(resp.StatusCode, fmt.Errorf("inference server body: %s", rawBody), ErrInferenceInternal)
 	default:
-		return nil, responseErr(resp.StatusCode, fmt.Errorf("unexpected error, body: %w, %v", err, rawBody), ErrInferenceUpstream)
+		return nil, responseErr(resp.StatusCode, fmt.Errorf("unexpected body: %s", rawBody), ErrInferenceUpstream)
 	}
 }
 

@@ -23,8 +23,10 @@ type Repository interface {
 	UnassignedAnimalsByUser(context.Context, string) ([]animal.Animal, error)
 	GetAnimal(context.Context, string) (*animal.Animal, error)
 	FarmerIDByPublicID(context.Context, string) (*int64, error)
-	FindFAISSCandidates(ctx context.Context, lat, lng, bbox float64) ([]animal.CandidateRow, error)
-	CreateAnimalWithEmbeddingsAndImages(ctx context.Context, params animal.CreateAnimalTx) (*animal.Animal, error)
+	FindFAISSCandidates(context.Context, float64, float64, float64) ([]animal.CandidateRow, error)
+	CreateAnimalWithEmbeddingsAndImages(context.Context, animal.CreateAnimalTx) (*animal.Animal, error)
+
+	AddDebugAnimal(context.Context, animal.DebugCreateParams) error
 }
 
 type Handler struct {
@@ -224,8 +226,16 @@ func (h *Handler) register(c echo.Context) error {
 	if err != nil {
 		switch {
 		case errors.Is(err, inference.ErrDuplicateAnimal):
+			debugErr := h.uploadRegisterDebugData(ctx, frontImgs, muzzleImgs, userID, err.Error())
+			if debugErr != nil {
+				return echo.NewHTTPError(http.StatusInternalServerError, "internal error").SetInternal(debugErr)
+			}
 			return echo.NewHTTPError(http.StatusConflict, err.Error()).SetInternal(err)
 		case errors.Is(err, inference.ErrPoorImageQuality):
+			debugErr := h.uploadRegisterDebugData(ctx, frontImgs, muzzleImgs, userID, err.Error())
+			if debugErr != nil {
+				return echo.NewHTTPError(http.StatusInternalServerError, "internal error").SetInternal(debugErr)
+			}
 			return echo.NewHTTPError(http.StatusUnprocessableEntity, err.Error()).SetInternal(err)
 		case errors.Is(err, inference.ErrInferenceInternal):
 			return echo.NewHTTPError(http.StatusServiceUnavailable, err.Error()).SetInternal(err)
