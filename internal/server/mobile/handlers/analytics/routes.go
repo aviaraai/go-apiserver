@@ -4,21 +4,20 @@ import (
 	"context"
 	"go-api-server/internal/database/analytics"
 	"go-api-server/internal/middleware"
-	"go-api-server/internal/storage"
 	"net/http"
+
 	"github.com/labstack/echo/v4"
 )
 
 type Repository interface {
-	UserAnalytics(context.Context, string) (*analytics.Analytics, error)
+	UserAnalytics(context.Context, string) (*analytics.UserAnalytics, error)
 }
 
 type Handler struct {
-	DB      Repository
-	Storage storage.Storage
+	DB Repository
 }
 
-func toAnalyticsResponse(analytics *analytics.Analytics) *AnalyticsResponse {
+func toAnalyticsResponse(analytics *analytics.UserAnalytics) *AnalyticsResponse {
 	return &AnalyticsResponse{
 		TotalFarmers: analytics.TotalFarmers,
 		TotalAnimals: analytics.TotalAnimals,
