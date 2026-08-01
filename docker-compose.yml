@@ -19,8 +19,8 @@ services:
     volumes:
       - ./secrets/gcs_key.json:/app/secrets/gcs_key.json:ro
 
-    ports:
-      - "${PORT}:${PORT}"
+    expose:
+     - "${PORT}"
 
     networks:
       - godhaar-net.dev
