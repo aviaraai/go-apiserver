@@ -12,6 +12,7 @@ import (
 type Repository interface {
 	AdminAnalytics(context.Context, *string, *string, *string, *time.Time, *time.Time) ([]analytics.AdminAnalytics, error)
 	AdminTotalAnalytics(context.Context) (*analytics.AdminTotalAnalytics, error)
+	LegacyAnalytics(context.Context, *string, *string, *string) ([]analytics.LegacyAnalytics, error)
 }
 
 type Handler struct {
@@ -28,10 +29,21 @@ func toAnalyticsResponse(analytics analytics.AdminAnalytics) AnalyticsResponse {
 	}
 }
 
+func toLegacyAnalyticsResponse(legacyAnalytics *analytics.LegacyAnalytics) LegacyAnalyticsResponse {
+	return LegacyAnalyticsResponse{
+		State:       legacyAnalytics.State,
+		District:    legacyAnalytics.District,
+		Mandal:      legacyAnalytics.Mandal,
+		FarmerCount: legacyAnalytics.FarmerCount,
+		AnimalCount: legacyAnalytics.AnimalCount,
+	}
+}
+
 func RegisterRoutes(g *echo.Group, h *Handler) {
 	analyticsGroup := g.Group("/analytics")
 	analyticsGroup.GET("", h.analytics)
 	analyticsGroup.GET("/totals", h.analyticsTotal)
+	analyticsGroup.GET("/legacy", h.legacyAnalytics)
 }
 
 func (h *Handler) analytics(c echo.Context) error {
@@ -83,4 +95,23 @@ func (h *Handler) analyticsTotal(c echo.Context) error {
 		TotalAnimals: adminTotalAnalytics.TotalAnimals,
 	}
 	return c.JSON(http.StatusOK, adminTotalAnalyticsRes)
+}
+
+func (h *Handler) legacyAnalytics(c echo.Context) error {
+	ctx := c.Request().Context()
+
+	var req LegacyAnalyticsRequest
+	if err := c.Bind(&req); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "missing data").SetInternal(err)
+	}
+
+	legacyAnalytics, err := h.DB.LegacyAnalytics(ctx, req.State, req.District, req.Mandal)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fetch legacy analytics").SetInternal(err)
+	}
+	legacyAnalyticsRes := make([]LegacyAnalyticsResponse, len(legacyAnalytics))
+	for i := range legacyAnalytics {
+		legacyAnalyticsRes[i] = toLegacyAnalyticsResponse(&legacyAnalytics[i])
+	}
+	return c.JSON(http.StatusOK, legacyAnalyticsRes)
 }

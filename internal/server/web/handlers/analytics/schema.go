@@ -8,6 +8,12 @@ type AnalyticsRequest struct {
 	ToStr    *string `query:"to_date"`
 }
 
+type LegacyAnalyticsRequest struct {
+	State    *string `query:"state"`
+	District *string `query:"district"`
+	Mandal   *string `query:"mandal"`
+}
+
 type AnalyticsResponse struct {
 	UserEmail       string `json:"user_email"`
 	TotalFarmers    int    `json:"total_farmers"`
@@ -19,4 +25,12 @@ type AnalyticsResponse struct {
 type TotalAnalyticsResponse struct {
 	TotalFarmers int `json:"total_farmers"`
 	TotalAnimals int `json:"total_animals"`
+}
+
+type LegacyAnalyticsResponse struct {
+	State       string `json:"state"`
+	District    string `json:"district"`
+	Mandal      string `json:"mandal"`
+	FarmerCount int    `json:"farmer_count"`
+	AnimalCount int    `json:"animal_count"`
 }

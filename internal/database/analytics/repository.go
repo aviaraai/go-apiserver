@@ -93,7 +93,7 @@ func (r *Repository) AdminAnalytics(ctx context.Context, state, district, mandal
 
 	var analytics []AdminAnalytics
 	if err := r.db.SelectContext(ctx, &analytics, query, state, district, mandal, fromDate, toDate); err != nil {
-		return nil, fmt.Errorf("analytics: %w", err)
+		return nil, fmt.Errorf("admin analytics: %w", err)
 	}
 	return analytics, nil
 }
@@ -107,7 +107,24 @@ func (r *Repository) AdminTotalAnalytics(ctx context.Context) (*AdminTotalAnalyt
 
 	var analytics AdminTotalAnalytics
 	if err := r.db.GetContext(ctx, &analytics, query); err != nil {
-		return nil, fmt.Errorf("analytics: %w", err)
+		return nil, fmt.Errorf("total admin analytics: %w", err)
 	}
 	return &analytics, nil
+}
+
+func (r *Repository) LegacyAnalytics(ctx context.Context, state, district, mandal *string) ([]LegacyAnalytics, error) {
+	const query = `
+		SELECT state, district, mandal, farmer_count, animal_count
+		FROM legacy_location_stats
+		WHERE ($1::text IS NULL OR state = $1)
+		  AND ($2::text IS NULL OR district = $2)
+		  AND ($3::text IS NULL OR mandal = $3)
+		ORDER BY animal_count DESC, farmer_count DESC, mandal ASC;
+	`
+
+	var legacyAnalytics []LegacyAnalytics
+	if err := r.db.SelectContext(ctx, &legacyAnalytics, query, state, district, mandal); err != nil {
+		return nil, fmt.Errorf("legacy analytics: %w", err)
+	}
+	return legacyAnalytics, nil
 }

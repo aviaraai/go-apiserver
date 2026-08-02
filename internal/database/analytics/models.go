@@ -21,3 +21,11 @@ type AdminTotalAnalytics struct {
 	TotalFarmers int `db:"total_farmers"`
 	TotalAnimals int `db:"total_animals"`
 }
+
+type LegacyAnalytics struct {
+	State       string `db:"state"`
+	District    string `db:"district"`
+	Mandal      string `db:"mandal"`
+	FarmerCount int    `db:"farmer_count"`
+	AnimalCount int    `db:"animal_count"`
+}
