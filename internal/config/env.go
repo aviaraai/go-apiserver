@@ -27,6 +27,8 @@ type Config struct {
 
 	// Supabase JWT Key
 	JWTSecret []byte
+	// Supabase issuer key for JWT
+	SupabaseProjectURL string
 	// Admin Key for admin access
 	AdminAPIKey []byte
 
@@ -62,6 +64,7 @@ func Load() (*Config, error) {
 	cfg.SSLMode = mustGet("SSL_MODE", &errs)
 
 	cfg.JWTSecret = mustGetBytes("SUPABASE_JWT_SECRET", 32, &errs)
+	cfg.SupabaseProjectURL = mustGet("SUPABASE_PROJECT_URL", &errs)
 	cfg.AdminAPIKey = mustGetBytes("ADMIN_API_KEY", 32, &errs)
 
 	cfg.GCSBucket = mustGet("GCS_BUCKET", &errs)

@@ -15,3 +15,8 @@ type AnalyticsResponse struct {
 	TotalAssigned   int    `json:"total_assigned"`
 	TotalUnassigned int    `json:"total_unassigned"`
 }
+
+type TotalAnalyticsResponse struct {
+	TotalFarmers int `json:"total_farmers"`
+	TotalAnimals int `json:"total_animals"`
+}

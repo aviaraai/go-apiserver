@@ -16,3 +16,8 @@ type AdminAnalytics struct {
 	TotalAssigned   int    `db:"total_assigned"`
 	TotalUnassigned int    `db:"total_unassigned"`
 }
+
+type AdminTotalAnalytics struct {
+	TotalFarmers int `db:"total_farmers"`
+	TotalAnimals int `db:"total_animals"`
+}

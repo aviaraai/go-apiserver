@@ -11,6 +11,7 @@ import (
 
 type Repository interface {
 	AdminAnalytics(context.Context, *string, *string, *string, *time.Time, *time.Time) ([]analytics.AdminAnalytics, error)
+	AdminTotalAnalytics(context.Context) (*analytics.AdminTotalAnalytics, error)
 }
 
 type Handler struct {
@@ -30,6 +31,7 @@ func toAnalyticsResponse(analytics analytics.AdminAnalytics) AnalyticsResponse {
 func RegisterRoutes(g *echo.Group, h *Handler) {
 	analyticsGroup := g.Group("/analytics")
 	analyticsGroup.GET("", h.analytics)
+	analyticsGroup.GET("/totals", h.analyticsTotal)
 }
 
 func (h *Handler) analytics(c echo.Context) error {
@@ -67,4 +69,18 @@ func (h *Handler) analytics(c echo.Context) error {
 		adminAnalyticsRes[i] = toAnalyticsResponse(adminAnalytics[i])
 	}
 	return c.JSON(http.StatusOK, adminAnalyticsRes)
+}
+
+func (h *Handler) analyticsTotal(c echo.Context) error {
+	ctx := c.Request().Context()
+
+	adminTotalAnalytics, err := h.DB.AdminTotalAnalytics(ctx)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fetch admin analytics").SetInternal(err)
+	}
+	adminTotalAnalyticsRes := &TotalAnalyticsResponse{
+		TotalFarmers: adminTotalAnalytics.TotalFarmers,
+		TotalAnimals: adminTotalAnalytics.TotalAnimals,
+	}
+	return c.JSON(http.StatusOK, adminTotalAnalyticsRes)
 }

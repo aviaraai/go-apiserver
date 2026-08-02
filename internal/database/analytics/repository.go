@@ -97,3 +97,17 @@ func (r *Repository) AdminAnalytics(ctx context.Context, state, district, mandal
 	}
 	return analytics, nil
 }
+
+func (r *Repository) AdminTotalAnalytics(ctx context.Context) (*AdminTotalAnalytics, error) {
+	const query = `
+		SELECT
+			(SELECT COUNT(*) FROM farmers) AS total_farmers,
+			(SELECT COUNT(*) FROM animals) AS total_animals;
+	`
+
+	var analytics AdminTotalAnalytics
+	if err := r.db.GetContext(ctx, &analytics, query); err != nil {
+		return nil, fmt.Errorf("analytics: %w", err)
+	}
+	return &analytics, nil
+}

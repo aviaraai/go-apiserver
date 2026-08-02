@@ -12,8 +12,9 @@ import (
 )
 
 const contextUserIDKey = "userID"
+const contextClaimsKey = "claims"
 
-func RequireJWTAuth(jwtSecret, adminAPIKey []byte) echo.MiddlewareFunc {
+func RequireJWTAuth(jwtSecret []byte, issuer string) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			header := c.Request().Header.Get("Authorization")
@@ -22,31 +23,45 @@ func RequireJWTAuth(jwtSecret, adminAPIKey []byte) echo.MiddlewareFunc {
 			}
 			tokenStr := strings.TrimPrefix(header, "Bearer ")
 
-			// Special API key path: constant-time compare to avoid timing attacks.
-			if subtle.ConstantTimeCompare([]byte(tokenStr), adminAPIKey) == 1 {
-				slog.Info("request authenticated with API key", slog.String("requestID", GetRequestID(c)))
-				c.Set(contextUserIDKey, "admin")
-				return next(c)
-			}
-
-			token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
-				if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-					return nil, errors.New("unexpected signing method")
-				}
-				return jwtSecret, nil
-			})
-			if err != nil || !token.Valid {
+			token, err := jwt.Parse(tokenStr,
+				func(t *jwt.Token) (any, error) {
+					return jwtSecret, nil
+				},
+				jwt.WithValidMethods([]string{"HS256"}),
+				jwt.WithAudience("authenticated"),
+				jwt.WithIssuer(issuer),
+				jwt.WithExpirationRequired())
+			if err != nil {
 				return echo.NewHTTPError(http.StatusUnauthorized, "invalid or expired JWT").SetInternal(err)
 			}
 			claims, ok := token.Claims.(jwt.MapClaims)
 			if !ok {
-				return echo.NewHTTPError(http.StatusUnauthorized, "invalid token claims").SetInternal(err)
+				return echo.NewHTTPError(http.StatusUnauthorized, "invalid token claims").SetInternal(errors.New("jwt claims were not MapClaims"))
 			}
 			sub, ok := claims["sub"].(string)
 			if !ok || sub == "" {
-				return echo.NewHTTPError(http.StatusUnauthorized, "invalid subject")
+				return echo.NewHTTPError(http.StatusUnauthorized, "invalid userID").SetInternal(errors.New("claims subject is invalid"))
 			}
 			c.Set(contextUserIDKey, sub)
+			c.Set(contextClaimsKey, claims)
+			return next(c)
+		}
+	}
+}
+
+func RequireAdmin() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			claims, ok := c.Get(contextClaimsKey).(jwt.MapClaims)
+			if !ok {
+				return echo.NewHTTPError(http.StatusInternalServerError, "server error").SetInternal(errors.New("server configuration error, jwt claims was never set by previous middleware"))
+			}
+
+			meta, _ := claims["app_metadata"].(map[string]any)
+			role, _ := meta["role"].(string)
+			if role != "admin" {
+				return echo.NewHTTPError(http.StatusForbidden, "not authorized").SetInternal(errors.New("non admin user is not authorized"))
+			}
 			return next(c)
 		}
 	}

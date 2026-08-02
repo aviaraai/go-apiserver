@@ -65,11 +65,11 @@ func (s *Server) RegisterRoutes() (http.Handler, error) {
 	dbRepo := newDbRepositories(dbHandle)
 
 	api := e.Group("/api")
-	api.HEAD("/", s.rootHandler, middleware.RequireAPIKeyAuth(s.cfg.AdminAPIKey))
+	api.HEAD("", s.rootHandler, middleware.RequireAPIKeyAuth(s.cfg.AdminAPIKey))
 	api.GET("/health", s.healthHandler, middleware.RequireAPIKeyAuth(s.cfg.AdminAPIKey))
 
-	web := api.Group("/web/v1")
-	mobile := api.Group("/mobile/v1", middleware.RequireJWTAuth(s.cfg.JWTSecret, s.cfg.AdminAPIKey))
+	web := api.Group("/web/v1", middleware.RequireJWTAuth(s.cfg.JWTSecret, s.cfg.SupabaseProjectURL+"/auth/v1"), middleware.RequireAdmin())
+	mobile := api.Group("/mobile/v1", middleware.RequireJWTAuth(s.cfg.JWTSecret, s.cfg.SupabaseProjectURL+"/auth/v1"))
 
 	registerWebRoutes(web, dbRepo)
 	registerMobileRoutes(mobile, dbRepo, gcsStore, inferenceClient, s.cfg.QREncryptionKey)
