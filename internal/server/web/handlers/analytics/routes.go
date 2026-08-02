@@ -20,7 +20,7 @@ type Handler struct {
 
 func toAnalyticsResponse(analytics analytics.AdminAnalytics) AnalyticsResponse {
 	return AnalyticsResponse{
-		UserID:          analytics.UserID,
+		UserEmail:       analytics.UserEmail,
 		TotalFarmers:    analytics.TotalFarmers,
 		TotalAnimals:    analytics.TotalAnimals,
 		TotalAssigned:   analytics.TotalAssigned,

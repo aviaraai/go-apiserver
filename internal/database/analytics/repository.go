@@ -52,7 +52,7 @@ func (r *Repository) UserAnalytics(ctx context.Context, userID string) (*UserAna
 func (r *Repository) AdminAnalytics(ctx context.Context, state, district, mandal *string, fromDate, toDate *time.Time) ([]AdminAnalytics, error) {
 	const query = `
 		SELECT
-	    COALESCE(f.created_by, a.created_by) AS user_id,
+	    COALESCE(f.created_by_email, a.created_by_email) AS user_email,
 	    COALESCE(f.total_farmers, 0)         AS total_farmers,
 	    COALESCE(a.total_animals, 0)         AS total_animals,
 	    COALESCE(a.total_assigned, 0)        AS total_assigned,
@@ -60,7 +60,7 @@ func (r *Repository) AdminAnalytics(ctx context.Context, state, district, mandal
 		FROM
 	    (
 	        SELECT
-	            created_by,
+	            created_by_email,
 	            COUNT(*) AS total_farmers
 	        FROM farmers
 	        WHERE
@@ -69,12 +69,12 @@ func (r *Repository) AdminAnalytics(ctx context.Context, state, district, mandal
 	            AND ($3::text IS NULL OR mandal = $3)
 	            AND ($4::timestamptz IS NULL OR created_at >= $4)
 	            AND ($5::timestamptz IS NULL OR created_at <  $5)
-	        GROUP BY created_by
+	        GROUP BY created_by_email
 	    ) AS f
 		FULL OUTER JOIN
 	    (
 	        SELECT
-	            created_by,
+	            created_by_email,
 	            COUNT(*) AS total_animals,
 	            COUNT(*) FILTER (WHERE farmer_id IS NOT NULL) AS total_assigned,
 	            COUNT(*) FILTER (WHERE farmer_id IS NULL)     AS total_unassigned
@@ -85,10 +85,10 @@ func (r *Repository) AdminAnalytics(ctx context.Context, state, district, mandal
 	            AND ($3::text IS NULL OR mandal = $3)
 	            AND ($4::timestamptz IS NULL OR created_at >= $4)
 	            AND ($5::timestamptz IS NULL OR created_at <  $5)
-	        GROUP BY created_by
+	        GROUP BY created_by_email
 	    ) AS a
-	    ON f.created_by = a.created_by
-		ORDER BY user_id;
+	    ON f.created_by_email = a.created_by_email
+		ORDER BY total_animals DESC, user_email ASC;
 	`
 
 	var analytics []AdminAnalytics

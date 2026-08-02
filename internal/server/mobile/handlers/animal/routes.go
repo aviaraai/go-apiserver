@@ -134,6 +134,7 @@ func (h *Handler) getAnimal(c echo.Context) error {
 func (h *Handler) register(c echo.Context) error {
 	ctx := c.Request().Context()
 	userID := middleware.UserIDFromContext(c)
+	email := middleware.EmailFromContext(c)
 
 	var req RegisterAnimalRequest
 	if err := c.Bind(&req); err != nil {
@@ -291,7 +292,9 @@ func (h *Handler) register(c echo.Context) error {
 			Latitude:         req.Latitude,
 			Longitude:        req.Longitude,
 			CreatedBy:        userID,
+			CreatedByEmail:   email,
 			UpdatedBy:        userID,
+			UpdatedByEmail:   email,
 		},
 		Embeddings: []animal.CreateEmbedding{
 			{EmbeddingType: "muzzle", Sequence: 1, FaissID: infResp.EmbeddingIDs[0]},

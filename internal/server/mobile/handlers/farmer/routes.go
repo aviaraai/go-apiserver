@@ -54,6 +54,7 @@ func RegisterRoutes(g *echo.Group, h *Handler) {
 func (h *Handler) addFarmer(c echo.Context) error {
 	ctx := c.Request().Context()
 	userID := middleware.UserIDFromContext(c)
+	email := middleware.EmailFromContext(c)
 
 	var req AddFarmerRequest
 	if err := c.Bind(&req); err != nil {
@@ -93,21 +94,23 @@ func (h *Handler) addFarmer(c echo.Context) error {
 	}
 
 	createFarmer := farmer.CreateFarmer{
-		PublicID:     publicID,
-		Name:         req.Name,
-		Type:         req.Type,
-		Relation:     req.Relation,
-		RelationName: req.RelationName,
-		State:        req.State,
-		District:     req.District,
-		Mandal:       req.Mandal,
-		Village:      req.Village,
-		PhoneNumber:  req.PhoneNumber,
-		PhotoKey:     key,
-		Latitude:     req.Latitude,
-		Longitude:    req.Longitude,
-		CreatedBy:    userID,
-		UpdatedBy:    userID,
+		PublicID:       publicID,
+		Name:           req.Name,
+		Type:           req.Type,
+		Relation:       req.Relation,
+		RelationName:   req.RelationName,
+		State:          req.State,
+		District:       req.District,
+		Mandal:         req.Mandal,
+		Village:        req.Village,
+		PhoneNumber:    req.PhoneNumber,
+		PhotoKey:       key,
+		Latitude:       req.Latitude,
+		Longitude:      req.Longitude,
+		CreatedBy:      userID,
+		CreatedByEmail: email,
+		UpdatedBy:      userID,
+		UpdatedByEmail: email,
 	}
 
 	f, err := h.DB.Create(ctx, &createFarmer)

@@ -18,7 +18,7 @@ func NewRepository(db *sqlx.DB) *Repository {
 }
 
 func (r *Repository) Create(ctx context.Context, q *CreateFarmer) (*Farmer, error) {
-	const query = `INSERT INTO farmers (public_id, name, farmer_type, relation, relation_name, phone_number, state, district, mandal, village, photo_key, latitude, longitude, created_by, updated_by) VALUES (:public_id, :name, :farmer_type, :relation, :relation_name, :phone_number, :state, :district, :mandal, :village, :photo_key, :latitude, :longitude, :created_by, :updated_by) RETURNING public_id, name, farmer_type, relation, relation_name, phone_number, state, district, mandal, village;`
+	const query = `INSERT INTO farmers (public_id, name, farmer_type, relation, relation_name, phone_number, state, district, mandal, village, photo_key, latitude, longitude, created_by, created_by_email, updated_by, updated_by_email) VALUES (:public_id, :name, :farmer_type, :relation, :relation_name, :phone_number, :state, :district, :mandal, :village, :photo_key, :latitude, :longitude, :created_by, :created_by_email, :updated_by, :updated_by_email) RETURNING public_id, name, farmer_type, relation, relation_name, phone_number, state, district, mandal, village;`
 	rows, err := r.db.NamedQueryContext(ctx, query, q)
 	if err != nil {
 		return nil, translatePGError(err)

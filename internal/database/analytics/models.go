@@ -10,7 +10,7 @@ type UserAnalytics struct {
 }
 
 type AdminAnalytics struct {
-	UserID          string `db:"user_id"`
+	UserEmail       string `db:"user_email"`
 	TotalFarmers    int    `db:"total_farmers"`
 	TotalAnimals    int    `db:"total_animals"`
 	TotalAssigned   int    `db:"total_assigned"`

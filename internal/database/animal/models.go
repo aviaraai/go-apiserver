@@ -51,7 +51,9 @@ type CreateAnimal struct {
 	Latitude         float64  `db:"latitude"`
 	Longitude        float64  `db:"longitude"`
 	CreatedBy        string   `db:"created_by"`
+	CreatedByEmail   string   `db:"created_by_email"`
 	UpdatedBy        string   `db:"updated_by"`
+	UpdatedByEmail   string   `db:"updated_by_email"`
 }
 
 type CreateEmbedding struct {

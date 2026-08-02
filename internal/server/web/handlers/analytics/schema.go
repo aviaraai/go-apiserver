@@ -9,7 +9,7 @@ type AnalyticsRequest struct {
 }
 
 type AnalyticsResponse struct {
-	UserID          string `json:"user_id"`
+	UserEmail       string `json:"user_email"`
 	TotalFarmers    int    `json:"total_farmers"`
 	TotalAnimals    int    `json:"total_animals"`
 	TotalAssigned   int    `json:"total_assigned"`

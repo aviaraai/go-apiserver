@@ -12,6 +12,7 @@ import (
 )
 
 const contextUserIDKey = "userID"
+const contextEmailKey = "email"
 const contextClaimsKey = "claims"
 
 func RequireJWTAuth(jwtSecret []byte, issuer string) echo.MiddlewareFunc {
@@ -40,9 +41,14 @@ func RequireJWTAuth(jwtSecret []byte, issuer string) echo.MiddlewareFunc {
 			}
 			sub, ok := claims["sub"].(string)
 			if !ok || sub == "" {
-				return echo.NewHTTPError(http.StatusUnauthorized, "invalid userID").SetInternal(errors.New("claims subject is invalid"))
+				return echo.NewHTTPError(http.StatusUnauthorized, "invalid user id").SetInternal(errors.New("claims sub field is invalid"))
+			}
+			email, ok := claims["email"].(string)
+			if !ok || email == "" {
+				return echo.NewHTTPError(http.StatusUnauthorized, "invalid email").SetInternal(errors.New("claims email field is invalid"))
 			}
 			c.Set(contextUserIDKey, sub)
+			c.Set(contextEmailKey, email)
 			c.Set(contextClaimsKey, claims)
 			return next(c)
 		}
@@ -86,9 +92,12 @@ func RequireAPIKeyAuth(adminAPIKey []byte) echo.MiddlewareFunc {
 	}
 }
 
-// UserIDFromContext returns the authenticated user's Supabase ID.
-// Only valid inside handlers protected by RequireAuth.
 func UserIDFromContext(c echo.Context) string {
 	userID, _ := c.Get(contextUserIDKey).(string)
 	return userID
+}
+
+func EmailFromContext(c echo.Context) string {
+	email, _ := c.Get(contextEmailKey).(string)
+	return email
 }
