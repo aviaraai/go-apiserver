@@ -13,21 +13,23 @@ type DeviceInfo struct {
 	AppVersion   string
 }
 
-func DeviceInfoMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
-	return func(c echo.Context) error {
-		manufacturer := c.Request().Header.Get("X-Device-Manufacturer")
-		model := c.Request().Header.Get("X-Device-Model")
-		osVersion := c.Request().Header.Get("X-OS-Version")
-		appVersion := c.Request().Header.Get("X-App-Version")
+func DeviceInfoMiddleware() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			manufacturer := c.Request().Header.Get("X-Device-Manufacturer")
+			model := c.Request().Header.Get("X-Device-Model")
+			osVersion := c.Request().Header.Get("X-OS-Version")
+			appVersion := c.Request().Header.Get("X-App-Version")
 
-		c.Set(contextClientInfoKey, DeviceInfo{
-			Manufacturer: manufacturer,
-			Model:        model,
-			OSVersion:    osVersion,
-			AppVersion:   appVersion,
-		})
+			c.Set(contextClientInfoKey, DeviceInfo{
+				Manufacturer: manufacturer,
+				Model:        model,
+				OSVersion:    osVersion,
+				AppVersion:   appVersion,
+			})
 
-		return next(c)
+			return next(c)
+		}
 	}
 }
 

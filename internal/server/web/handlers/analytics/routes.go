@@ -3,6 +3,7 @@ package analytics
 import (
 	"context"
 	"go-api-server/internal/database/analytics"
+	"go-api-server/internal/middleware"
 	"net/http"
 	"time"
 
@@ -40,7 +41,7 @@ func toLegacyAnalyticsResponse(legacyAnalytics *analytics.LegacyAnalytics) Legac
 }
 
 func RegisterRoutes(g *echo.Group, h *Handler) {
-	analyticsGroup := g.Group("/analytics")
+	analyticsGroup := g.Group("/analytics", middleware.RequireRole("admin"))
 	analyticsGroup.GET("", h.analytics)
 	analyticsGroup.GET("/totals", h.analyticsTotal)
 	analyticsGroup.GET("/legacy", h.legacyAnalytics)

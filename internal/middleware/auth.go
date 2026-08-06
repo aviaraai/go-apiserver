@@ -3,8 +3,10 @@ package middleware
 import (
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -55,18 +57,29 @@ func RequireJWTAuth(jwtSecret []byte, issuer string) echo.MiddlewareFunc {
 	}
 }
 
-func RequireAdmin() echo.MiddlewareFunc {
+func rolesFromClaims(claims jwt.MapClaims) []string {
+	meta, _ := claims["app_metadata"].(map[string]any)
+	raw, _ := meta["app_roles"].([]any)
+	roles := make([]string, 0, len(raw))
+	for _, r := range raw {
+		if s, ok := r.(string); ok {
+			roles = append(roles, s)
+		}
+	}
+	return roles
+}
+
+func RequireRole(role string) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			claims, ok := c.Get(contextClaimsKey).(jwt.MapClaims)
 			if !ok {
-				return echo.NewHTTPError(http.StatusInternalServerError, "server error").SetInternal(errors.New("server configuration error, jwt claims was never set by previous middleware"))
+				return echo.NewHTTPError(http.StatusInternalServerError, "server error").
+					SetInternal(errors.New("jwt claims never set by previous middleware"))
 			}
-
-			meta, _ := claims["app_metadata"].(map[string]any)
-			role, _ := meta["role"].(string)
-			if role != "admin" {
-				return echo.NewHTTPError(http.StatusForbidden, "not authorized").SetInternal(errors.New("non admin user is not authorized"))
+			if !slices.Contains(rolesFromClaims(claims), role) {
+				return echo.NewHTTPError(http.StatusForbidden, "not authorized").
+					SetInternal(fmt.Errorf("user lacks role %q", role))
 			}
 			return next(c)
 		}

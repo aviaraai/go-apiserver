@@ -3,6 +3,7 @@ package animal
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -25,21 +26,49 @@ type imageFile struct {
 	validated string
 }
 
+// Local image rejection codes. Where a code means the same thing as one the
+// inference server can return, it uses the same string on purpose: the mobile
+// app should not care whether a photo was rejected here or two services away.
+const (
+	codeImageUnreadable        = "IMAGE_UNREADABLE"
+	codeImageUnsupportedFormat = "IMAGE_UNSUPPORTED_FORMAT"
+	codeImageTooLarge          = "IMAGE_TOO_LARGE"
+)
+
+// imageRejection is a problem this server found in an uploaded photo, shaped
+// like the inference server's per-image failures so both arrive at the client
+// the same way: a code to act on and the slot to point at.
+//
+// Internal holds the underlying error — a decoder message, a multipart read
+// failure — which is logged but never sent, exactly as with inference errors.
+type imageRejection struct {
+	Slot     string
+	Code     string
+	Internal error
+}
+
+func (e *imageRejection) Error() string { return fmt.Sprintf("%s: %s", e.Slot, e.Code) }
+
+func (e *imageRejection) Unwrap() error { return e.Internal }
+
 func readAndValidateOne(header *multipart.FileHeader, label string) (*imageFile, error) {
 	src, err := header.Open()
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", label, err)
+		return nil, &imageRejection{Slot: label, Code: codeImageUnreadable,
+			Internal: fmt.Errorf("open %s: %w", label, err)}
 	}
 	defer src.Close()
 
 	data, err := io.ReadAll(src)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", label, err)
+		return nil, &imageRejection{Slot: label, Code: codeImageUnreadable,
+			Internal: fmt.Errorf("read %s: %w", label, err)}
 	}
 
 	contentType, err := imaging.ValidateImage(bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", label, err)
+		return nil, &imageRejection{Slot: label, Code: imageRejectionCode(err),
+			Internal: fmt.Errorf("validate %s: %w", label, err)}
 	}
 
 	return &imageFile{
@@ -48,6 +77,21 @@ func readAndValidateOne(header *multipart.FileHeader, label string) (*imageFile,
 		data:      data,
 		validated: contentType,
 	}, nil
+}
+
+func imageRejectionCode(err error) string {
+	switch {
+	case errors.Is(err, imaging.ErrUnsupportedFormat):
+		return codeImageUnsupportedFormat
+	case errors.Is(err, imaging.ErrDimensionsTooLarge):
+		return codeImageTooLarge
+	default:
+		// Covers ErrNotAnImage and any decode failure underneath it. The
+		// decoder's own message is kept in Internal rather than shown — it
+		// names formats and offsets that mean nothing to whoever took the
+		// photo.
+		return codeImageUnreadable
+	}
 }
 
 func readAndValidate(headers []*multipart.FileHeader, prefix string) ([]*imageFile, error) {

@@ -69,9 +69,3 @@ type CreateImage struct {
 	Sequence  int    `db:"sequence"`
 	ImageKey  string `db:"image_key"`
 }
-
-type DebugCreateParams struct {
-	ImageFolder   string `db:"image_folder"`
-	InferenceInfo string `db:"inference_info"`
-	CreatedBy     string `db:"created_by"`
-}

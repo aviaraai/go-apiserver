@@ -1,40 +1,18 @@
-// internal/inference/client.go
 package inference
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 )
-
-var (
-	ErrDuplicateAnimal   = errors.New("animal already registered (duplicate detected)")
-	ErrPoorImageQuality  = errors.New("image quality too poor for registration")
-	ErrInferenceInternal = errors.New("inference server internal error")
-	ErrInferenceUpstream = errors.New("failed to process request")
-)
-
-// ResponseError wraps an inference failure together with the raw response that
-// caused it. The raw body is deliberately kept out of Error() — callers log it
-// at debug level, while the wrapped error stays safe to surface to a client.
-// errors.Is still reaches the sentinels above through Unwrap.
-type ResponseError struct {
-	StatusCode int
-	RawError   error
-	SafeError  error
-}
-
-func (e *ResponseError) Error() string { return e.SafeError.Error() }
-
-func (e *ResponseError) Unwrap() error { return e.SafeError }
 
 type Candidate struct {
 	FaissID     int64   `json:"faiss_id"`
@@ -83,6 +61,12 @@ type SearchResponse struct {
 	TopMatches  []SearchMatch   `json:"top_matches"`
 }
 
+// registerEmbeddingCount is the number of muzzle embeddings a successful
+// registration must yield — one per muzzle image. The caller writes exactly
+// this many embedding rows, so a different count is a contract violation and
+// is rejected here rather than half-applied downstream.
+const registerEmbeddingCount = 3
+
 type Client interface {
 	Register(ctx context.Context, front, muzzle []ImagePayload, candidates []Candidate) (*RegisterResponse, error)
 	Search(ctx context.Context, front, muzzle ImagePayload, candidateIDs []Candidate, topK int) (*SearchResponse, error)
@@ -100,149 +84,187 @@ func NewHTTPClient(baseURL string) *HTTPClient {
 	}
 }
 
+// Register and Search follow the same three steps: build the body, exchange it
+// with the server, then check the success payload actually says what we need.
+// Only the middle step can produce a domain verdict — everything the first and
+// third step can go wrong with is our own fault, and is classified as such.
+
 func (c *HTTPClient) Register(ctx context.Context, front, muzzle []ImagePayload, candidates []Candidate) (*RegisterResponse, error) {
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-
-	candidatesJSON, err := json.Marshal(candidates)
+	body, contentType, err := buildRegisterBody(front, muzzle, candidates)
 	if err != nil {
-		return nil, fmt.Errorf("marshal candidates: %w", err)
-	}
-	if err := writer.WriteField("candidates", string(candidatesJSON)); err != nil {
-		return nil, fmt.Errorf("write candidates field: %w", err)
+		return nil, transportError(CodeUnavailable, 0, err)
 	}
 
-	if err := writeImageFields(writer, "front_images", front); err != nil {
-		return nil, err
-	}
-	if err := writeImageFields(writer, "muzzle_images", muzzle); err != nil {
+	var out RegisterResponse
+	status, err := c.exchange(ctx, "/register", body, contentType, &out)
+	if err != nil {
 		return nil, err
 	}
 
-	if err := writer.Close(); err != nil {
-		return nil, fmt.Errorf("close multipart writer: %w", err)
+	if err := validateRegisterResponse(&out); err != nil {
+		return nil, contractError(status, err)
+	}
+	return &out, nil
+}
+
+func (c *HTTPClient) Search(ctx context.Context, front, muzzle ImagePayload, candidates []Candidate, topK int) (*SearchResponse, error) {
+	body, contentType, err := buildSearchBody(front, muzzle, candidates, topK)
+	if err != nil {
+		return nil, transportError(CodeUnavailable, 0, err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/register", body)
+	var out SearchResponse
+	status, err := c.exchange(ctx, "/search", body, contentType, &out)
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
+		return nil, err
 	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	if err := validateSearchResponse(&out); err != nil {
+		return nil, contractError(status, err)
+	}
+	return &out, nil
+}
+
+// exchange sends a prepared body and decodes a success payload into out. Every
+// error it returns is already classified, and every one of them is safe to hand
+// to a caller: the failing URL, the dial error and the response body all stay
+// inside Error.RawError.
+func (c *HTTPClient) exchange(ctx context.Context, path string, body *bytes.Buffer, contentType string, out any) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, body)
+	if err != nil {
+		return 0, transportError(CodeUnavailable, 0, fmt.Errorf("build request: %w", err))
+	}
+	req.Header.Set("Content-Type", contentType)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("inference request: %w", err)
+		return 0, transportError(CodeUnavailable, 0, fmt.Errorf("inference request: %w", err))
 	}
 	defer resp.Body.Close()
 
 	rawBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read inference response: %w", err)
+		return resp.StatusCode, transportError(CodeUnavailable, resp.StatusCode, fmt.Errorf("read inference response: %w", err))
 	}
 
-	switch resp.StatusCode {
-	case http.StatusCreated, http.StatusOK:
-		var out RegisterResponse
-		if err := json.Unmarshal(rawBody, &out); err != nil {
-			return nil, responseErr(resp.StatusCode, fmt.Errorf("json parsing error, body: %w, %s", err, rawBody), fmt.Errorf("decode inference response: %w", err))
-		}
-		return &out, nil
-	case http.StatusConflict:
-		return nil, responseErr(resp.StatusCode, fmt.Errorf("duplicate animal registration body: %s", rawBody), ErrDuplicateAnimal)
-	case http.StatusUnprocessableEntity:
-		return nil, responseErr(resp.StatusCode, fmt.Errorf("body: %s", rawBody), withDetail(ErrPoorImageQuality, rawBody))
-	case http.StatusInternalServerError:
-		return nil, responseErr(resp.StatusCode, fmt.Errorf("inference server body: %s", rawBody), ErrInferenceInternal)
-	default:
-		return nil, responseErr(resp.StatusCode, fmt.Errorf("unexpected body: %s", rawBody), ErrInferenceUpstream)
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return resp.StatusCode, decodeErrorBody(resp.StatusCode, rawBody)
 	}
+
+	if err := json.Unmarshal(rawBody, out); err != nil {
+		return resp.StatusCode, contractError(resp.StatusCode, fmt.Errorf("decode inference response: %w, body: %s", err, rawBody))
+	}
+	return resp.StatusCode, nil
+}
+
+// validateRegisterResponse rejects a success body that decoded cleanly but does
+// not carry what registration needs. An empty JSON object unmarshals without
+// error, so without these checks a malformed 200 would reach the database as
+// blank colours and no embeddings.
+func validateRegisterResponse(r *RegisterResponse) error {
+	if len(r.EmbeddingIDs) != registerEmbeddingCount {
+		return fmt.Errorf("expected %d embedding ids, got %d", registerEmbeddingCount, len(r.EmbeddingIDs))
+	}
+	for i, id := range r.EmbeddingIDs {
+		if id == 0 {
+			return fmt.Errorf("embedding id %d is zero", i)
+		}
+	}
+	if r.ExtractedColors.Body.Label == "" || r.ExtractedColors.Muzzle.Label == "" {
+		return fmt.Errorf("missing extracted colour labels (body=%q muzzle=%q)",
+			r.ExtractedColors.Body.Label, r.ExtractedColors.Muzzle.Label)
+	}
+	return nil
+}
+
+// validateSearchResponse checks the parts of a search result that must always
+// be present. An empty TopMatches is deliberately allowed — "nothing scored
+// well enough" is a real answer — but the colour labels are extracted on every
+// query, so their absence means the body was not a real search result. Without
+// that check a malformed 200 would be indistinguishable from a genuine no-match
+// and would quietly register as an UNKNOWN verdict.
+func validateSearchResponse(r *SearchResponse) error {
+	if r.QueryColors.Body.Label == "" || r.QueryColors.Muzzle.Label == "" {
+		return fmt.Errorf("missing query colour labels (body=%q muzzle=%q)",
+			r.QueryColors.Body.Label, r.QueryColors.Muzzle.Label)
+	}
+	for i, m := range r.TopMatches {
+		if m.FaissID == 0 {
+			return fmt.Errorf("match %d has zero faiss_id", i)
+		}
+		// Scores are cosine similarities over normalised embeddings, so they
+		// live in [-1, 1]. Anything outside that is not a score we can reason
+		// about, and letting it through would be dangerous rather than merely
+		// wrong: a single absurd value sails past every threshold in the
+		// decision engine and produces a confident MATCH.
+		if math.IsNaN(m.Score) || m.Score < -1 || m.Score > 1 {
+			return fmt.Errorf("match %d has out-of-range score %v", i, m.Score)
+		}
+	}
+	return nil
+}
+
+func buildRegisterBody(front, muzzle []ImagePayload, candidates []Candidate) (*bytes.Buffer, string, error) {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	if err := writeCandidates(writer, candidates); err != nil {
+		return nil, "", err
+	}
+	if err := writeImageFields(writer, "front_images", front); err != nil {
+		return nil, "", err
+	}
+	if err := writeImageFields(writer, "muzzle_images", muzzle); err != nil {
+		return nil, "", err
+	}
+	if err := writer.Close(); err != nil {
+		return nil, "", fmt.Errorf("close multipart writer: %w", err)
+	}
+	return body, writer.FormDataContentType(), nil
+}
+
+func buildSearchBody(front, muzzle ImagePayload, candidates []Candidate, topK int) (*bytes.Buffer, string, error) {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	if err := writeCandidates(writer, candidates); err != nil {
+		return nil, "", err
+	}
+
+	// Field names here must match the inference /search signature exactly:
+	// muzzle (File), front (File), top_k (Form), candidates (Form).
+	// A mismatch produces a FastAPI request-validation 422, which classifies as
+	// a contract violation rather than an image complaint.
+	if err := writeImageFields(writer, "muzzle", []ImagePayload{muzzle}); err != nil {
+		return nil, "", err
+	}
+	if err := writeImageFields(writer, "front", []ImagePayload{front}); err != nil {
+		return nil, "", err
+	}
+	if err := writer.WriteField("top_k", strconv.Itoa(topK)); err != nil {
+		return nil, "", fmt.Errorf("write top_k field: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return nil, "", fmt.Errorf("close multipart writer: %w", err)
+	}
+	return body, writer.FormDataContentType(), nil
+}
+
+func writeCandidates(w *multipart.Writer, candidates []Candidate) error {
+	candidatesJSON, err := json.Marshal(candidates)
+	if err != nil {
+		return fmt.Errorf("marshal candidates: %w", err)
+	}
+	if err := w.WriteField("candidates", string(candidatesJSON)); err != nil {
+		return fmt.Errorf("write candidates field: %w", err)
+	}
+	return nil
 }
 
 // quoteEscaper mirrors the escaping used by mime/multipart's CreateFormFile:
 // only backslash, double-quote, CR, and LF are escaped. Using fmt's %q instead
 // would escape non-ASCII runes to \uXXXX/\xXX, mangling unicode filenames.
 var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"", "\r", "%0D", "\n", "%0A")
-
-func (c *HTTPClient) Search(ctx context.Context, front, muzzle ImagePayload, candidates []Candidate, topK int) (*SearchResponse, error) {
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-
-	candidatesJSON, err := json.Marshal(candidates)
-	if err != nil {
-		return nil, fmt.Errorf("marshal candidates: %w", err)
-	}
-	if err := writer.WriteField("candidates", string(candidatesJSON)); err != nil {
-		return nil, fmt.Errorf("write candidates field: %w", err)
-	}
-
-	// Field names here must match the inference /search signature exactly:
-	// muzzle (File), front (File), top_k (Form), candidate_ids (repeated Form).
-	if err := writeImageFields(writer, "muzzle", []ImagePayload{muzzle}); err != nil {
-		return nil, err
-	}
-	if err := writeImageFields(writer, "front", []ImagePayload{front}); err != nil {
-		return nil, err
-	}
-	if err := writer.WriteField("top_k", strconv.Itoa(topK)); err != nil {
-		return nil, fmt.Errorf("write top_k field: %w", err)
-	}
-
-	if err := writer.Close(); err != nil {
-		return nil, fmt.Errorf("close multipart writer: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/search", body)
-	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("inference request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	rawBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read inference response: %w", err)
-	}
-
-	switch resp.StatusCode {
-	case http.StatusOK:
-		var out SearchResponse
-		if err := json.Unmarshal(rawBody, &out); err != nil {
-			return nil, responseErr(resp.StatusCode, fmt.Errorf("json parsing error, body: %w, %s", err, rawBody), ErrInferenceUpstream)
-		}
-		return &out, nil
-	case http.StatusUnprocessableEntity:
-		return nil, responseErr(resp.StatusCode, fmt.Errorf("body: %s", rawBody), withDetail(ErrPoorImageQuality, rawBody))
-	case http.StatusInternalServerError:
-		return nil, responseErr(resp.StatusCode, fmt.Errorf("inference server body: %s", rawBody), ErrInferenceInternal)
-	default:
-		return nil, responseErr(resp.StatusCode, fmt.Errorf("unexpected body: %s", rawBody), ErrInferenceUpstream)
-	}
-}
-
-func responseErr(statusCode int, rawError error, safeError error) error {
-	return &ResponseError{StatusCode: statusCode, RawError: rawError, SafeError: safeError}
-}
-
-// withDetail appends the inference server's "detail" field to base when there
-// is one. Everything else in the body is discarded so raw upstream payloads
-// never end up in an error message. A body that is not JSON, has no detail, or
-// carries a non-string detail (e.g. a validation error list) leaves base as-is.
-func withDetail(base error, raw []byte) error {
-	var payload map[string]any
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return base
-	}
-	detail, _ := payload["detail"].(string)
-	if detail == "" {
-		return base
-	}
-	return fmt.Errorf("%w: %s", base, detail)
-}
 
 func writeImageFields(w *multipart.Writer, fieldName string, images []ImagePayload) error {
 	for _, img := range images {

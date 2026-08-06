@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
-	"sort"
 
 	"go-api-server/internal/database/animal"
+	debugdb "go-api-server/internal/database/debug"
 	"go-api-server/internal/id"
 	"go-api-server/internal/inference"
 	"go-api-server/internal/middleware"
@@ -25,11 +25,19 @@ type Repository interface {
 	FarmerIDByPublicID(context.Context, string) (*int64, error)
 	FindFAISSCandidates(context.Context, float64, float64, float64) ([]animal.CandidateRow, error)
 	CreateAnimalWithEmbeddingsAndImages(context.Context, animal.CreateAnimalTx) (*animal.Animal, error)
-	AddDebugAnimal(context.Context, animal.DebugCreateParams) error
+}
+
+// DebugRepository is the developer-facing record of what the model did. It is a
+// separate interface from Repository because writing to it must never be able
+// to affect the user-facing outcome — see debug.go.
+type DebugRepository interface {
+	RecordRegistrationFailure(context.Context, debugdb.CreateRegistrationFailure) error
+	RecordSearch(context.Context, debugdb.CreateSearchRecord) error
 }
 
 type Handler struct {
 	DB        Repository
+	DebugDB   DebugRepository
 	Storage   storage.Storage
 	Inference inference.Client
 }
@@ -69,8 +77,8 @@ func RegisterRoutes(g *echo.Group, h *Handler) {
 	animalGroup := g.Group("/animals")
 	animalGroup.GET("", h.listAnimals)
 	animalGroup.GET("/:godhaar_id", h.getAnimal)
-	animalGroup.POST("/register", h.register, middleware.UserLockMiddleware, middleware.DeviceInfoMiddleware)
-	animalGroup.POST("/search", h.search, middleware.DeviceInfoMiddleware)
+	animalGroup.POST("/register", h.register, middleware.UserLockMiddleware, middleware.DeviceInfoMiddleware())
+	animalGroup.POST("/search", h.search, middleware.DeviceInfoMiddleware())
 }
 
 // Farmer all cattle and check same user
@@ -176,32 +184,32 @@ func (h *Handler) register(c echo.Context) error {
 	// We need the bytes twice: once for inference, once for storage upload.
 	frontImgs, err := readAndValidate(frontHeaders, "front")
 	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		return uploadHTTPError(err)
 	}
 	muzzleImgs, err := readAndValidate(muzzleHeaders, "muzzle")
 	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		return uploadHTTPError(err)
 	}
 	leftImg, err := readAndValidateOne(leftHeader, "left")
 	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		return uploadHTTPError(err)
 	}
 	rightImg, err := readAndValidateOne(rightHeader, "right")
 	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		return uploadHTTPError(err)
 	}
 
 	var healthCert, valuationCert *imageFile
 	if healthCertHeader != nil {
 		healthCert, err = readAndValidateOne(healthCertHeader, "health_certificate")
 		if err != nil {
-			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+			return uploadHTTPError(err)
 		}
 	}
 	if valuationCertHeader != nil {
 		valuationCert, err = readAndValidateOne(valuationCertHeader, "valuation_certificate")
 		if err != nil {
-			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+			return uploadHTTPError(err)
 		}
 	}
 
@@ -212,8 +220,14 @@ func (h *Handler) register(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to find candidates").SetInternal(err)
 	}
 	nearby := filterByRadius(candidateRows, lat, lng, searchRadiusKm)
+
+	// The inference server only ever knows FAISS ids. Keeping the reverse map
+	// is what lets a duplicate rejection name the existing registration —
+	// see duplicateDetails.
+	faissToGodhaar := make(map[int64]string, len(nearby))
 	candidates := make([]inference.Candidate, len(nearby))
 	for i, c := range nearby {
+		faissToGodhaar[c.FaissID] = c.GodhaarID
 		candidates[i] = inference.Candidate{
 			FaissID:     c.FaissID,
 			BodyColor:   c.BodyColor,
@@ -223,31 +237,16 @@ func (h *Handler) register(c echo.Context) error {
 	}
 
 	// Call inference server. This is what actually detects duplicates.
+	// The response shape is validated inside the client, so reaching past this
+	// point means infResp carries three embedding ids and both colour labels.
 	infResp, err := h.Inference.Register(ctx, toInferencePayloads(frontImgs), toInferencePayloads(muzzleImgs), candidates)
 	if err != nil {
-		switch {
-		case errors.Is(err, inference.ErrDuplicateAnimal):
-			debugErr := h.uploadRegisterDebugData(ctx, frontImgs, muzzleImgs, userID, err.Error())
-			if debugErr != nil {
-				return echo.NewHTTPError(http.StatusInternalServerError, "internal error").SetInternal(debugErr)
-			}
-			return echo.NewHTTPError(http.StatusConflict, err.Error()).SetInternal(err)
-		case errors.Is(err, inference.ErrPoorImageQuality):
-			debugErr := h.uploadRegisterDebugData(ctx, frontImgs, muzzleImgs, userID, err.Error())
-			if debugErr != nil {
-				return echo.NewHTTPError(http.StatusInternalServerError, "internal error").SetInternal(debugErr)
-			}
-			return echo.NewHTTPError(http.StatusUnprocessableEntity, err.Error()).SetInternal(err)
-		case errors.Is(err, inference.ErrInferenceInternal):
-			return echo.NewHTTPError(http.StatusServiceUnavailable, err.Error()).SetInternal(err)
-		default:
-			return echo.NewHTTPError(http.StatusBadGateway, err.Error()).SetInternal(err)
-		}
-	}
-
-	if len(infResp.EmbeddingIDs) != 3 {
-		return echo.NewHTTPError(http.StatusBadGateway, "inference server returned wrong embedding count").SetInternal(
-			fmt.Errorf("expected 3 embedding ids, got %d", len(infResp.EmbeddingIDs)))
+		infErr := inference.Classify(err)
+		matchedGodhaarID, matchErr := duplicateGodhaarID(infErr, faissToGodhaar)
+		captureErr := h.captureRegistrationFailure(c, infErr, frontImgs, muzzleImgs, matchedGodhaarID)
+		return inferenceHTTPError(infErr,
+			registerErrorDetails(infErr, matchedGodhaarID),
+			errors.Join(captureErr, matchErr))
 	}
 
 	// Only now — after inference confirmed this is a new registration — generate ID and upload.
@@ -340,11 +339,11 @@ func (h *Handler) search(c echo.Context) error {
 
 	muzzleImg, err := readAndValidateOne(muzzleHeader, "muzzle")
 	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		return uploadHTTPError(err)
 	}
 	frontImg, err := readAndValidateOne(frontHeader, "front")
 	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		return uploadHTTPError(err)
 	}
 
 	// ── Bounding-box SQL pre-filter + exact Haversine radius filter ────────
@@ -354,83 +353,122 @@ func (h *Handler) search(c echo.Context) error {
 	}
 	nearby := filterByRadius(candidateRows, req.Latitude, req.Longitude, searchRadiusKm)
 
-	if len(nearby) == 0 {
-		log.Printf("search result: no candidates within %.0f km | lat=%.6f lng=%.6f",
-			searchRadiusKm, req.Latitude, req.Longitude)
-		return c.JSON(http.StatusOK, SearchResponse{Score: 0})
-	}
+	// No animal registered near enough to compare against means the model is
+	// never consulted, and the verdict below stands as written. It is still
+	// recorded and still logged: from the dashboard's point of view this is
+	// "searched, found nothing", and leaving it out would make the no-match
+	// rate look better than it is.
+	v := verdict{Decision: "UNKNOWN", Reason: "no_candidates"}
 
-	// Build lookup tables from faiss_id: one row per embedding, 3 per cattle.
-	// animalToGodhaar lets us translate the DB-only animal_id back to the
-	// public godhaar_id before responding — animal_id never leaves the server.
-	faissToGodhaar := make(map[int64]string, len(nearby))
-	candidates := make([]inference.Candidate, len(nearby))
-	for i, r := range nearby {
-		faissToGodhaar[r.FaissID] = r.GodhaarID
-		candidates[i] = inference.Candidate{
-			FaissID:     r.FaissID,
-			BodyColor:   r.BodyColor,
-			MuzzleColor: r.MuzzleColor,
-			HornShape:   r.HornShape,
+	if len(nearby) > 0 {
+		// Build lookup tables from faiss_id: one row per embedding, 3 per
+		// cattle. The attribute table feeds the decision engine's colour/horn
+		// comparison, which needs what we have on record for each candidate.
+		faissToGodhaar := make(map[int64]string, len(nearby))
+		attributes := make(map[string]animalAttributes, len(nearby))
+		candidates := make([]inference.Candidate, len(nearby))
+		for i, r := range nearby {
+			faissToGodhaar[r.FaissID] = r.GodhaarID
+			attributes[r.GodhaarID] = animalAttributes{
+				BodyColor:   r.BodyColor,
+				MuzzleColor: r.MuzzleColor,
+				HornShape:   r.HornShape,
+			}
+			candidates[i] = inference.Candidate{
+				FaissID:     r.FaissID,
+				BodyColor:   r.BodyColor,
+				MuzzleColor: r.MuzzleColor,
+				HornShape:   r.HornShape,
+			}
 		}
-	}
 
-	// ── Call inference server ──────────────────────────────────────────────
-	infResp, err := h.Inference.Search(
-		ctx,
-		toInferencePayload(frontImg),
-		toInferencePayload(muzzleImg),
-		candidates,
-		searchTopK,
-	)
-	if err != nil {
-		switch {
-		case errors.Is(err, inference.ErrPoorImageQuality):
-			return echo.NewHTTPError(http.StatusUnprocessableEntity, err.Error()).SetInternal(err)
-		case errors.Is(err, inference.ErrInferenceInternal):
-			return echo.NewHTTPError(http.StatusServiceUnavailable, err.Error()).SetInternal(err)
-		default:
-			return echo.NewHTTPError(http.StatusBadGateway, err.Error()).SetInternal(err)
+		// ── Call inference server ──────────────────────────────────────────
+		infResp, err := h.Inference.Search(
+			ctx,
+			toInferencePayload(frontImg),
+			toInferencePayload(muzzleImg),
+			candidates,
+			searchTopK,
+		)
+		if err != nil {
+			infErr := inference.Classify(err)
+			captureErr := h.captureSearchFailure(c, infErr, frontImg, muzzleImg)
+			return inferenceHTTPError(infErr, searchErrorDetails(infErr), captureErr)
 		}
-	}
 
-	// ── Aggregate embedding-level → cattle-level (max score) ───────────────
-	cattleScores := make(map[string]float64)
-	for _, m := range infResp.TopMatches {
-		gid, ok := faissToGodhaar[m.FaissID]
-		if !ok {
-			// faiss_id returned by inference not in our candidate set — skip.
-			continue
+		// ── Aggregate embedding-level → cattle-level (max score) ───────────
+		cattleScores := make(map[string]float64)
+		for _, m := range infResp.TopMatches {
+			gid, ok := faissToGodhaar[m.FaissID]
+			if !ok {
+				// faiss_id returned by inference not in our candidate set.
+				continue
+			}
+			if s, seen := cattleScores[gid]; !seen || m.Score > s {
+				cattleScores[gid] = m.Score
+			}
 		}
-		if s, seen := cattleScores[gid]; !seen || m.Score > s {
-			cattleScores[gid] = m.Score
-		}
+
+		// ── Decision engine ────────────────────────────────────────────────
+		// The colour and horn labels from inference are compared against what
+		// we have on record for each candidate, but only as a bounded
+		// adjustment to the embedding score — never as a filter. See
+		// attributeWeight for why.
+		ranked := rankCandidates(cattleScores, attributes, queryAttributes{
+			BodyColor:   infResp.QueryColors.Body.Label,
+			MuzzleColor: infResp.QueryColors.Muzzle.Label,
+			HornShape:   infResp.HornShape,
+		})
+		v = decide(ranked)
 	}
 
-	ranked := make([]rankedAnimal, 0, len(cattleScores))
-	for gid, score := range cattleScores {
-		ranked = append(ranked, rankedAnimal{GodhaarID: gid, Score: score})
+	captureErr := h.captureSearch(c, v, frontImg, muzzleImg)
+
+	// The one log line this package emits. A search that succeeds returns 200
+	// and so never reaches customHTTPErrorHandler, which is where everything
+	// else in this service is logged — but the verdict is the single most
+	// useful record of what the model did, and a search that silently returned
+	// the wrong animal is only ever diagnosed from it afterwards.
+	//
+	// A failed capture rides along here rather than being logged where it
+	// happened, so this stays the only logging site on the success path.
+	attrs := []slog.Attr{
+		slog.String("requestID", middleware.GetRequestID(c)),
+		slog.String("userID", middleware.UserIDFromContext(c)),
+		slog.String("decision", v.Decision),
+		slog.String("reason", v.Reason),
+		slog.Float64("score", v.Score),
+		slog.Float64("adjustedScore", v.AdjustedScore),
+		slog.Float64("gap", v.Gap),
+		slog.Float64("agreement", v.Agreement),
+		slog.Int("candidates", len(nearby)),
+		slog.Float64("latitude", req.Latitude),
+		slog.Float64("longitude", req.Longitude),
 	}
-	sort.Slice(ranked, func(i, j int) bool { return ranked[i].Score > ranked[j].Score })
-
-	// ── Decision engine ────────────────────────────────────────────────────
-	// Color labels from inference (infResp.QueryColors) are intentionally NOT
-	// used to hard-filter — classifier confidence is unreliable — so, matching
-	// the Python flow, all ranked candidates pass to the decision engine.
-	v := decide(ranked)
-
-	// Full verdict is logged for debugging; the frontend only receives
-	// godhaar_id + score.
-	gidLog := "none"
 	if v.GodhaarID != nil {
-		gidLog = *v.GodhaarID
+		attrs = append(attrs, slog.String("topCandidate", *v.GodhaarID))
 	}
-	log.Printf("search result: godhaar_id=%s decision=%s score=%.6f gap=%.6f reason=%s | lat=%.6f lng=%.6f",
-		gidLog, v.Decision, v.Score, v.Gap, v.Reason, req.Latitude, req.Longitude)
+	if captureErr != nil {
+		attrs = append(attrs, slog.Any("captureError", captureErr))
+	}
+	slog.LogAttrs(ctx, slog.LevelInfo, "search result", attrs...)
 
 	return c.JSON(http.StatusOK, SearchResponse{
-		GodhaarID: v.GodhaarID,
+		GodhaarID: responseGodhaarID(v),
 		Decision:  v.Decision,
 		Score:     v.Score,
 	})
+}
+
+// responseGodhaarID decides whether the client is told which animal came top.
+//
+// UNKNOWN means "this animal is not registered here", so naming the candidate
+// that failed to clear the bar would invite the app to show it as a result. A
+// REVIEW is the opposite: it exists precisely so a human can look at that
+// candidate, so it has to be named.
+func responseGodhaarID(v verdict) *string {
+	if v.Decision == "UNKNOWN" {
+		return nil
+	}
+	return v.GodhaarID
 }

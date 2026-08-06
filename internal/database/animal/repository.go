@@ -159,24 +159,3 @@ func (r *Repository) CreateAnimalWithEmbeddingsAndImages(ctx context.Context, pa
 	}
 	return &animal, nil
 }
-
-func (r *Repository) AddDebugAnimal(ctx context.Context, p DebugCreateParams) error {
-	const query = `
-		INSERT INTO animal_registration_debug (
-			image_folder,
-			inference_info,
-			created_by
-		)
-		VALUES (
-			:image_folder,
-			:inference_info,
-			:created_by
-		)`
-
-	_, err := r.db.NamedExecContext(ctx, query, p)
-	if err != nil {
-		return fmt.Errorf("create registration debug: %w", err)
-	}
-
-	return nil
-}

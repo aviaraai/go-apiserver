@@ -3,11 +3,15 @@ package server
 import (
 	"errors"
 	"fmt"
+	"go-api-server/internal/cctv"
 	analyticsdb "go-api-server/internal/database/analytics"
 	animaldb "go-api-server/internal/database/animal"
+	cctvdb "go-api-server/internal/database/cctv"
+	debugdb "go-api-server/internal/database/debug"
 	farmerdb "go-api-server/internal/database/farmer"
 	imagedb "go-api-server/internal/database/image"
 	qrdb "go-api-server/internal/database/qr"
+	"go-api-server/internal/httperr"
 	"go-api-server/internal/inference"
 	"go-api-server/internal/middleware"
 	"go-api-server/internal/server/mobile/handlers/analytics"
@@ -16,6 +20,8 @@ import (
 	"go-api-server/internal/server/mobile/handlers/image"
 	"go-api-server/internal/server/mobile/handlers/qr"
 	webAnalytics "go-api-server/internal/server/web/handlers/analytics"
+	webCCTV "go-api-server/internal/server/web/handlers/cctv"
+	webDebug "go-api-server/internal/server/web/handlers/debug"
 	"go-api-server/internal/storage"
 	"log/slog"
 	"net/http"
@@ -25,16 +31,14 @@ import (
 	echoMiddleware "github.com/labstack/echo/v4/middleware"
 )
 
-type ErrorResponse struct {
-	Message string `json:"message"`
-}
-
 type dbRepositories struct {
 	farmer    *farmerdb.Repository
 	animal    *animaldb.Repository
 	analytics *analyticsdb.Repository
 	image     *imagedb.Repository
 	qr        *qrdb.Repository
+	debug     *debugdb.Repository
+	cctv      *cctvdb.Repository
 }
 
 func newDbRepositories(db *sqlx.DB) *dbRepositories {
@@ -44,6 +48,8 @@ func newDbRepositories(db *sqlx.DB) *dbRepositories {
 		analytics: analyticsdb.NewRepository(db),
 		image:     imagedb.NewRepository(db),
 		qr:        qrdb.NewRepository(db),
+		debug:     debugdb.NewRepository(db),
+		cctv:      cctvdb.NewRepository(db),
 	}
 }
 
@@ -60,6 +66,12 @@ func (s *Server) RegisterRoutes() (http.Handler, error) {
 	}
 	slog.Info("storage client initialized")
 	inferenceClient := inference.NewHTTPClient(s.cfg.InferenceServerURL)
+	cctvInference := inference.NewHTTPCCTVClient(s.cfg.InferenceServerURL)
+
+	// The camera integration is not written yet. Everything downstream of the
+	// fetch works; swapping this for a real Source is the only step left.
+	var cctvSource cctv.Source = cctv.NotImplementedSource{}
+
 	dbHandle := s.db.DB()
 
 	dbRepo := newDbRepositories(dbHandle)
@@ -68,22 +80,40 @@ func (s *Server) RegisterRoutes() (http.Handler, error) {
 	api.HEAD("", s.rootHandler, middleware.RequireAPIKeyAuth(s.cfg.AdminAPIKey))
 	api.GET("/health", s.healthHandler, middleware.RequireAPIKeyAuth(s.cfg.AdminAPIKey))
 
-	web := api.Group("/web/v1", middleware.RequireJWTAuth(s.cfg.JWTSecret, s.cfg.SupabaseProjectURL+"/auth/v1"), middleware.RequireAdmin())
+	web := api.Group("/web/v1", middleware.RequireJWTAuth(s.cfg.JWTSecret, s.cfg.SupabaseProjectURL+"/auth/v1"))
 	mobile := api.Group("/mobile/v1", middleware.RequireJWTAuth(s.cfg.JWTSecret, s.cfg.SupabaseProjectURL+"/auth/v1"))
 
-	registerWebRoutes(web, dbRepo)
+	registerWebRoutes(web, dbRepo, gcsStore, cctvInference, cctvSource)
 	registerMobileRoutes(mobile, dbRepo, gcsStore, inferenceClient, s.cfg.QREncryptionKey)
 
 	return e, nil
 }
 
-func registerWebRoutes(web *echo.Group, dbRepo *dbRepositories) {
+func registerWebRoutes(
+	web *echo.Group,
+	dbRepo *dbRepositories,
+	gcsStorage storage.Storage,
+	cctvInference inference.CCTVClient,
+	cctvSource cctv.Source,
+) {
 	webAnalytics.RegisterRoutes(web, &webAnalytics.Handler{DB: dbRepo.analytics})
+	webDebug.RegisterRoutes(web, &webDebug.Handler{DB: dbRepo.debug, Storage: gcsStorage})
+	webCCTV.RegisterRoutes(web, &webCCTV.Handler{
+		DB:        dbRepo.cctv,
+		Storage:   gcsStorage,
+		Inference: cctvInference,
+		Source:    cctvSource,
+	})
 }
 
 func registerMobileRoutes(mobile *echo.Group, dbRepo *dbRepositories, gcsStorage storage.Storage, inferenceClient inference.Client, qrKey []byte) {
 	farmer.RegisterRoutes(mobile, &farmer.Handler{DB: dbRepo.farmer, Storage: gcsStorage})
-	animal.RegisterRoutes(mobile, &animal.Handler{DB: dbRepo.animal, Storage: gcsStorage, Inference: inferenceClient})
+	animal.RegisterRoutes(mobile, &animal.Handler{
+		DB:        dbRepo.animal,
+		DebugDB:   dbRepo.debug,
+		Storage:   gcsStorage,
+		Inference: inferenceClient,
+	})
 	analytics.RegisterRoutes(mobile, &analytics.Handler{DB: dbRepo.analytics})
 
 	animalGroup := mobile.Group("/animals")
@@ -98,22 +128,24 @@ func customHTTPErrorHandler(err error, c echo.Context) {
 	}
 
 	code := http.StatusInternalServerError
-	message := "internal server error"
+	body := httperr.Response{Message: "internal server error"}
 
 	logErr := err
 
 	if httpError, ok := errors.AsType[*echo.HTTPError](err); ok {
 		code = httpError.Code
 
-		if msg, ok := httpError.Message.(string); ok {
-			message = msg
+		// A handler may return either a plain string message or a full
+		// Response when it has machine-readable data to pass on.
+		switch msg := httpError.Message.(type) {
+		case httperr.Response:
+			body = msg
+		case string:
+			body.Message = msg
 		}
 
 		if httpError.Internal != nil {
 			logErr = httpError.Internal
-			if inferErr, ok := errors.AsType[*inference.ResponseError](logErr); ok {
-				logErr = inferErr.RawError
-			}
 		}
 	}
 
@@ -123,8 +155,26 @@ func customHTTPErrorHandler(err error, c echo.Context) {
 		slog.String("method", c.Request().Method),
 		slog.String("path", c.Request().URL.Path),
 		slog.String("userID", middleware.UserIDFromContext(c)),
-		slog.String("message", message),
+		slog.String("message", body.Message),
 		slog.Any("error", logErr),
+	}
+
+	// Inference errors keep their internal detail out of Error(), so RawError
+	// is pulled out separately — this is the only place the upstream body, URL
+	// and dial error are allowed to surface. It is an extra attribute rather
+	// than a replacement because logErr may be several joined problems (the
+	// inference failure plus, say, a debug capture that did not write), and
+	// collapsing it to the upstream detail alone would drop the rest.
+	if inferErr, ok := errors.AsType[*inference.Error](logErr); ok {
+		if body.Code == "" {
+			body.Code = string(inferErr.Code)
+		}
+		if inferErr.RawError != nil {
+			attrs = append(attrs, slog.Any("upstreamError", inferErr.RawError))
+		}
+	}
+	if body.Code != "" {
+		attrs = append(attrs, slog.String("errorCode", body.Code))
 	}
 
 	if device, ok := middleware.DeviceInfoFromContext(c); ok {
@@ -141,7 +191,7 @@ func customHTTPErrorHandler(err error, c echo.Context) {
 	default:
 		slog.LogAttrs(c.Request().Context(), slog.LevelWarn, "client error", attrs...)
 	}
-	c.JSON(code, ErrorResponse{Message: message})
+	c.JSON(code, body)
 }
 
 func (s *Server) rootHandler(c echo.Context) error {
