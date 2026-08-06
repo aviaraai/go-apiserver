@@ -70,7 +70,8 @@ func (r *Repository) FindFAISSCandidates(ctx context.Context, lat, lng, bbox flo
     a.latitude,
     a.longitude,
     a.body_color,
-    a.muzzle_color
+    a.muzzle_color,
+    a.horn_shape
 	FROM embeddings e
 	JOIN animals a ON e.animal_id = a.id
 	WHERE a.latitude IS NOT NULL
@@ -93,11 +94,11 @@ func (r *Repository) CreateAnimalWithEmbeddingsAndImages(ctx context.Context, pa
 		INSERT INTO animals (
 		    godhaar_id, farmer_id, animal_type, gender, breed, age, cost, insurance_premium,
 		    state, district, mandal, village, latitude, longitude, health_remarks,
-		    body_color, muzzle_color, created_by, created_by_email, updated_by, updated_by_email
+		    body_color, muzzle_color, horn_shape, created_by, created_by_email, updated_by, updated_by_email
 		) VALUES (
 		    :godhaar_id, :farmer_id, :animal_type, :gender, :breed, :age, :cost, :insurance_premium,
 		    :state, :district, :mandal, :village, :latitude, :longitude, :health_remarks,
-		    :body_color, :muzzle_color, :created_by, :created_by_email, :updated_by, :updated_by_email
+		    :body_color, :muzzle_color, :horn_shape, :created_by, :created_by_email, :updated_by, :updated_by_email
 		) RETURNING id, godhaar_id, animal_type, gender, breed, age, cost, insurance_premium, state, district, mandal, village;
 	`
 

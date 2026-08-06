@@ -34,10 +34,13 @@ type ResponseError struct {
 
 func (e *ResponseError) Error() string { return e.SafeError.Error() }
 
+func (e *ResponseError) Unwrap() error { return e.SafeError }
+
 type Candidate struct {
-	FaissID     int64  `json:"faiss_id"`
-	BodyColor   string `json:"body_color"`
-	MuzzleColor string `json:"muzzle_color"`
+	FaissID     int64   `json:"faiss_id"`
+	BodyColor   string  `json:"body_color"`
+	MuzzleColor string  `json:"muzzle_color"`
+	HornShape   *string `json:"horn_shape"`
 }
 
 type ImagePayload struct {
@@ -50,6 +53,7 @@ type RegisterResponse struct {
 	Status          string          `json:"status"`
 	EmbeddingIDs    []int64         `json:"embedding_ids"`
 	ExtractedColors ExtractedColors `json:"extracted_colors"`
+	HornShape       *string         `json:"horn_shape"`
 	RegisteredAt    string          `json:"registered_at"`
 }
 
@@ -75,12 +79,13 @@ type SearchMatch struct {
 type SearchResponse struct {
 	RequestID   string          `json:"request_id"`
 	QueryColors ExtractedColors `json:"query_colors"`
+	HornShape   *string         `json:"horn_shape"`
 	TopMatches  []SearchMatch   `json:"top_matches"`
 }
 
 type Client interface {
 	Register(ctx context.Context, front, muzzle []ImagePayload, candidates []Candidate) (*RegisterResponse, error)
-	Search(ctx context.Context, front, muzzle ImagePayload, candidateIDs []int64, topK int) (*SearchResponse, error)
+	Search(ctx context.Context, front, muzzle ImagePayload, candidateIDs []Candidate, topK int) (*SearchResponse, error)
 }
 
 type HTTPClient struct {
@@ -158,9 +163,17 @@ func (c *HTTPClient) Register(ctx context.Context, front, muzzle []ImagePayload,
 // would escape non-ASCII runes to \uXXXX/\xXX, mangling unicode filenames.
 var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"", "\r", "%0D", "\n", "%0A")
 
-func (c *HTTPClient) Search(ctx context.Context, front, muzzle ImagePayload, candidateIDs []int64, topK int) (*SearchResponse, error) {
+func (c *HTTPClient) Search(ctx context.Context, front, muzzle ImagePayload, candidates []Candidate, topK int) (*SearchResponse, error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
+
+	candidatesJSON, err := json.Marshal(candidates)
+	if err != nil {
+		return nil, fmt.Errorf("marshal candidates: %w", err)
+	}
+	if err := writer.WriteField("candidates", string(candidatesJSON)); err != nil {
+		return nil, fmt.Errorf("write candidates field: %w", err)
+	}
 
 	// Field names here must match the inference /search signature exactly:
 	// muzzle (File), front (File), top_k (Form), candidate_ids (repeated Form).
@@ -172,11 +185,6 @@ func (c *HTTPClient) Search(ctx context.Context, front, muzzle ImagePayload, can
 	}
 	if err := writer.WriteField("top_k", strconv.Itoa(topK)); err != nil {
 		return nil, fmt.Errorf("write top_k field: %w", err)
-	}
-	for _, id := range candidateIDs {
-		if err := writer.WriteField("candidate_ids", strconv.FormatInt(id, 10)); err != nil {
-			return nil, fmt.Errorf("write candidate_ids field: %w", err)
-		}
 	}
 
 	if err := writer.Close(); err != nil {

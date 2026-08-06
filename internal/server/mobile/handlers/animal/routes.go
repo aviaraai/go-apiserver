@@ -25,7 +25,6 @@ type Repository interface {
 	FarmerIDByPublicID(context.Context, string) (*int64, error)
 	FindFAISSCandidates(context.Context, float64, float64, float64) ([]animal.CandidateRow, error)
 	CreateAnimalWithEmbeddingsAndImages(context.Context, animal.CreateAnimalTx) (*animal.Animal, error)
-
 	AddDebugAnimal(context.Context, animal.DebugCreateParams) error
 }
 
@@ -217,8 +216,9 @@ func (h *Handler) register(c echo.Context) error {
 	for i, c := range nearby {
 		candidates[i] = inference.Candidate{
 			FaissID:     c.FaissID,
-			BodyColor:   c.BodyColorLabel,
-			MuzzleColor: c.MuzzleColorLabel,
+			BodyColor:   c.BodyColor,
+			MuzzleColor: c.MuzzleColor,
+			HornShape:   c.HornShape,
 		}
 	}
 
@@ -262,7 +262,8 @@ func (h *Handler) register(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to upload images").SetInternal(err)
 	}
 
-	var farmerID *int64 // nil pointer
+	// Nil value to handle unassigned animal
+	var farmerID *int64
 
 	if req.PublicID != nil {
 		farmerID, err = h.DB.FarmerIDByPublicID(ctx, *req.PublicID)
@@ -288,6 +289,7 @@ func (h *Handler) register(c echo.Context) error {
 			Village:          req.Village,
 			BodyColor:        infResp.ExtractedColors.Body.Label,
 			MuzzleColor:      infResp.ExtractedColors.Muzzle.Label,
+			HornShape:        infResp.HornShape,
 			HealthRemarks:    req.HealthRemarks,
 			Latitude:         req.Latitude,
 			Longitude:        req.Longitude,
@@ -362,10 +364,15 @@ func (h *Handler) search(c echo.Context) error {
 	// animalToGodhaar lets us translate the DB-only animal_id back to the
 	// public godhaar_id before responding — animal_id never leaves the server.
 	faissToGodhaar := make(map[int64]string, len(nearby))
-	candidateIDs := make([]int64, 0, len(nearby))
-	for _, r := range nearby {
+	candidates := make([]inference.Candidate, len(nearby))
+	for i, r := range nearby {
 		faissToGodhaar[r.FaissID] = r.GodhaarID
-		candidateIDs = append(candidateIDs, r.FaissID)
+		candidates[i] = inference.Candidate{
+			FaissID:     r.FaissID,
+			BodyColor:   r.BodyColor,
+			MuzzleColor: r.MuzzleColor,
+			HornShape:   r.HornShape,
+		}
 	}
 
 	// ── Call inference server ──────────────────────────────────────────────
@@ -373,7 +380,7 @@ func (h *Handler) search(c echo.Context) error {
 		ctx,
 		toInferencePayload(frontImg),
 		toInferencePayload(muzzleImg),
-		candidateIDs,
+		candidates,
 		searchTopK,
 	)
 	if err != nil {
