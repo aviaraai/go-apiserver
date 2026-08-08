@@ -102,8 +102,7 @@ func imageRejectionHTTPError(rej *imageRejection) *echo.HTTPError {
 // response. Anything that is not a recognised image rejection is ours, not the
 // user's, so it gets a generic message and the real error goes to the log.
 func uploadHTTPError(err error) *echo.HTTPError {
-	var rej *imageRejection
-	if errors.As(err, &rej) {
+	if rej, ok := errors.AsType[*imageRejection](err); ok {
 		return imageRejectionHTTPError(rej)
 	}
 	return echo.NewHTTPError(http.StatusInternalServerError, httperr.Response{
@@ -124,17 +123,13 @@ func uploadHTTPError(err error) *echo.HTTPError {
 func inferenceHTTPError(infErr *inference.Error, details map[string]any, internalExtra error) *echo.HTTPError {
 	status, message := http.StatusServiceUnavailable, transportMessage
 
-	switch {
-	case infErr.Class == inference.ClassContract:
+	switch infErr.Class {
+	case inference.ClassContract:
 		status, message = http.StatusBadGateway, contractMessage
-	case infErr.Class == inference.ClassDomain:
+	case inference.ClassDomain:
 		if resp, ok := domainResponses[infErr.Code]; ok {
 			status, message = resp.status, resp.message
 		} else {
-			// The client only produces domain errors for codes it recognises,
-			// so reaching here means a code was added to the allowlist without
-			// adding copy for it. Fall back to the generic contract response
-			// rather than inventing an instruction.
 			status, message = http.StatusBadGateway, contractMessage
 		}
 	}
@@ -146,16 +141,6 @@ func inferenceHTTPError(infErr *inference.Error, details map[string]any, interna
 	}).SetInternal(errors.Join(infErr, internalExtra))
 }
 
-// duplicateGodhaarID resolves the animal a duplicate rejection collides with.
-// It returns "" for any failure that is not a duplicate.
-//
-// The returned error is a diagnostic, not a failure. A duplicate we cannot name
-// is still a duplicate and the registration is refused either way, so a gap here
-// degrades the response rather than rejecting it. It does mean the user is told
-// "already registered" with nothing to go and look at, which is worth recording:
-// inference only ever matches against candidates we supplied, so the lookup
-// should not be able to miss. The caller passes it to inferenceHTTPError, which
-// carries it to the central logger.
 func duplicateGodhaarID(infErr *inference.Error, faissToGodhaar map[int64]string) (string, error) {
 	if infErr.Code != inference.CodeDuplicateAnimal {
 		return "", nil
@@ -173,9 +158,6 @@ func duplicateGodhaarID(infErr *inference.Error, faissToGodhaar map[int64]string
 	return godhaarID, nil
 }
 
-// registerErrorDetails builds the machine-readable payload for a failed
-// registration: which photos to retake, and — for a duplicate — which existing
-// animal the new one collides with.
 func registerErrorDetails(infErr *inference.Error, matchedGodhaarID string) map[string]any {
 	details := searchErrorDetails(infErr)
 

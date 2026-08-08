@@ -108,10 +108,11 @@ type DeviceColumns struct {
 // images that caused it so the rejection can be reproduced.
 type CreateRegistrationFailure struct {
 	DeviceColumns
-	ErrorCode string      `db:"error_code"`
-	ImageKeys JSONStrings `db:"image_keys"`
-	Detail    JSONMap     `db:"detail"`
-	CreatedBy string      `db:"created_by"`
+	ErrorCode      string      `db:"error_code"`
+	ImageKeys      JSONStrings `db:"image_keys"`
+	Detail         JSONMap     `db:"detail"`
+	CreatedBy      string      `db:"created_by"`
+	CreatedByEmail string      `db:"created_by_email"`
 }
 
 // CreateSearchRecord is one search attempt of any outcome. GodhaarID is set
@@ -119,52 +120,84 @@ type CreateRegistrationFailure struct {
 // model actually scored.
 type CreateSearchRecord struct {
 	DeviceColumns
-	Decision  string      `db:"decision"`
-	GodhaarID *string     `db:"godhaar_id"`
-	Score     *float64    `db:"score"`
-	ErrorCode *string     `db:"error_code"`
-	ImageKeys JSONStrings `db:"image_keys"`
-	Detail    JSONMap     `db:"detail"`
-	CreatedBy string      `db:"created_by"`
+	Decision       string      `db:"decision"`
+	GodhaarID      *string     `db:"godhaar_id"`
+	Score          *float64    `db:"score"`
+	ErrorCode      *string     `db:"error_code"`
+	ImageKeys      JSONStrings `db:"image_keys"`
+	Detail         JSONMap     `db:"detail"`
+	CreatedBy      string      `db:"created_by"`
+	CreatedByEmail string      `db:"created_by_email"`
 }
 
+// RegistrationFailureRow is one failure in full, for the detail view.
 type RegistrationFailureRow struct {
 	DeviceColumns
-	ID        int64       `db:"id"`
-	ErrorCode string      `db:"error_code"`
-	ImageKeys JSONStrings `db:"image_keys"`
-	Detail    JSONMap     `db:"detail"`
-	CreatedBy string      `db:"created_by"`
-	CreatedAt time.Time   `db:"created_at"`
+	RegistrationID string      `db:"registration_id"`
+	ErrorCode      string      `db:"error_code"`
+	ImageKeys      JSONStrings `db:"image_keys"`
+	Detail         JSONMap     `db:"detail"`
+	CreatedBy      string      `db:"created_by"`
+	CreatedByEmail *string     `db:"created_by_email"`
+	CreatedAt      time.Time   `db:"created_at"`
 }
 
-// SearchRecordRow is a search record joined to the animal it matched. The
-// matched_* fields come from the LEFT JOIN and are nil for every non-MATCH row,
-// and also for a MATCH whose animal has since been deleted — which is worth
-// being able to see rather than hiding.
+// RegistrationFailureListRow is the same record reduced to what a listing
+// needs: every field the dashboard filters or sorts on, plus the image keys the
+// card thumbnail comes from. The detail jsonb is left behind — it is the
+// largest column and nothing on the listing reads it.
+type RegistrationFailureListRow struct {
+	DeviceColumns
+	RegistrationID string      `db:"registration_id"`
+	ErrorCode      string      `db:"error_code"`
+	ImageKeys      JSONStrings `db:"image_keys"`
+	CreatedBy      string      `db:"created_by"`
+	CreatedByEmail *string     `db:"created_by_email"`
+	CreatedAt      time.Time   `db:"created_at"`
+}
+
+// SearchRecordRow is one search in full, for the detail view.
+//
+// It carries no columns from the matched animal. What the dashboard needs about
+// that animal is its identity and its photos, and both are read separately by
+// MatchedAnimalImages — joining the animals table here would drag in breed, age
+// and location, none of which say anything about how the model performed.
 type SearchRecordRow struct {
 	DeviceColumns
-	ID        int64       `db:"id"`
-	Decision  string      `db:"decision"`
-	GodhaarID *string     `db:"godhaar_id"`
-	Score     *float64    `db:"score"`
-	ErrorCode *string     `db:"error_code"`
-	Verified  string      `db:"verified"`
-	ImageKeys JSONStrings `db:"image_keys"`
-	Detail    JSONMap     `db:"detail"`
-	CreatedBy string      `db:"created_by"`
-	CreatedAt time.Time   `db:"created_at"`
+	SearchID       string      `db:"search_id"`
+	Decision       string      `db:"decision"`
+	GodhaarID      *string     `db:"godhaar_id"`
+	Score          *float64    `db:"score"`
+	ErrorCode      *string     `db:"error_code"`
+	Verified       string      `db:"verified"`
+	ImageKeys      JSONStrings `db:"image_keys"`
+	Detail         JSONMap     `db:"detail"`
+	CreatedBy      string      `db:"created_by"`
+	CreatedByEmail *string     `db:"created_by_email"`
+	CreatedAt      time.Time   `db:"created_at"`
+}
 
-	MatchedType        *string `db:"matched_type"`
-	MatchedBreed       *string `db:"matched_breed"`
-	MatchedGender      *string `db:"matched_gender"`
-	MatchedAge         *int    `db:"matched_age"`
-	MatchedBodyColor   *string `db:"matched_body_color"`
-	MatchedMuzzleColor *string `db:"matched_muzzle_color"`
-	MatchedHornShape   *string `db:"matched_horn_shape"`
-	MatchedVillage     *string `db:"matched_village"`
-	MatchedMandal      *string `db:"matched_mandal"`
-	MatchedDistrict    *string `db:"matched_district"`
-	MatchedState       *string `db:"matched_state"`
-	MatchedImageKey    *string `db:"matched_image_key"`
+// SearchRecordListRow is the listing form. godhaar_id, decision and verified
+// all live on the record itself, so a listing needs no join at all.
+type SearchRecordListRow struct {
+	DeviceColumns
+	SearchID       string      `db:"search_id"`
+	Decision       string      `db:"decision"`
+	GodhaarID      *string     `db:"godhaar_id"`
+	Score          *float64    `db:"score"`
+	ErrorCode      *string     `db:"error_code"`
+	Verified       string      `db:"verified"`
+	ImageKeys      JSONStrings `db:"image_keys"`
+	CreatedBy      string      `db:"created_by"`
+	CreatedByEmail *string     `db:"created_by_email"`
+	CreatedAt      time.Time   `db:"created_at"`
+}
+
+// AnimalImage is one stored photo of a registered animal, carrying the slot it
+// was taken for. Unlike the debug images — whose slot has to be recovered from
+// the object key — these are labelled by the images table itself.
+type AnimalImage struct {
+	ImageType string `db:"image_type"`
+	Sequence  int    `db:"sequence"`
+	ImageKey  string `db:"image_key"`
 }

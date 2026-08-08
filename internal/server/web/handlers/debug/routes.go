@@ -4,20 +4,26 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"path"
 	"strconv"
+	"strings"
 
 	debugdb "go-api-server/internal/database/debug"
 	"go-api-server/internal/middleware"
 	"go-api-server/internal/storage"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"golang.org/x/sync/errgroup"
 )
 
 type Repository interface {
-	ListRegistrationFailures(context.Context) ([]debugdb.RegistrationFailureRow, error)
-	ListSearches(context.Context) ([]debugdb.SearchRecordRow, error)
-	UpdateSearchVerification(context.Context, int64, string) (*debugdb.SearchRecordRow, error)
+	ListRegistrationFailures(context.Context) ([]debugdb.RegistrationFailureListRow, error)
+	RegistrationFailureByID(context.Context, string) (*debugdb.RegistrationFailureRow, error)
+	ListSearches(context.Context) ([]debugdb.SearchRecordListRow, error)
+	SearchByID(context.Context, string) (*debugdb.SearchRecordRow, error)
+	MatchedAnimalImages(context.Context, string) ([]debugdb.AnimalImage, bool, error)
+	UpdateSearchVerification(context.Context, string, string) (*debugdb.SearchRecordRow, error)
 }
 
 type Handler struct {
@@ -25,15 +31,17 @@ type Handler struct {
 	Storage storage.Storage
 }
 
-// Both listings return everything, unpaginated, because the dashboard shows
-// them on a single screen. That holds while these tables stay small; the
-// created_at/id indexes are in place for keyset pagination when it stops being
-// true.
+// The dashboard filters client-side, so each listing returns every row and the
+// detail endpoints carry the payloads a card never shows. Both listings are
+// unpaginated, which holds while these tables stay small; the created_at/id
+// indexes are in place for keyset pagination when it stops being true.
 func RegisterRoutes(g *echo.Group, h *Handler) {
 	debugGroup := g.Group("/debug", middleware.RequireRole("developer"))
 	debugGroup.GET("/registrations", h.listRegistrationFailures)
+	debugGroup.GET("/registrations/:registration_id", h.getRegistrationFailure)
 	debugGroup.GET("/searches", h.listSearches)
-	debugGroup.PATCH("/searches/:id/verify", h.verifySearch)
+	debugGroup.GET("/searches/:search_id", h.getSearch)
+	debugGroup.PATCH("/searches/:search_id/verify", h.verifySearch)
 }
 
 func (h *Handler) listRegistrationFailures(c echo.Context) error {
@@ -44,24 +52,55 @@ func (h *Handler) listRegistrationFailures(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to list registration failures").SetInternal(err)
 	}
 
-	out := make([]RegistrationFailureResponse, len(rows))
-	urls, err := h.presignRows(ctx, len(rows), func(i int) []string { return rows[i].ImageKeys })
+	thumbs, err := h.presignThumbnails(ctx, len(rows), func(i int) []string { return rows[i].ImageKeys })
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to sign image urls").SetInternal(err)
 	}
 
+	out := make([]RegistrationFailureListItem, len(rows))
 	for i, r := range rows {
-		out[i] = RegistrationFailureResponse{
-			ID:        r.ID,
-			ErrorCode: r.ErrorCode,
-			ImageURLs: urls[i],
-			Detail:    r.Detail,
-			Device:    toDeviceResponse(r.DeviceColumns),
-			CreatedBy: r.CreatedBy,
-			CreatedAt: r.CreatedAt,
+		out[i] = RegistrationFailureListItem{
+			RegistrationID: r.RegistrationID,
+			ErrorCode:      r.ErrorCode,
+			ThumbnailURL:   thumbs[i],
+			Device:         toDeviceResponse(r.DeviceColumns),
+			CreatedByEmail: r.CreatedByEmail,
+			CreatedAt:      r.CreatedAt,
 		}
 	}
 	return c.JSON(http.StatusOK, out)
+}
+
+func (h *Handler) getRegistrationFailure(c echo.Context) error {
+	ctx := c.Request().Context()
+
+	registrationID, err := pathUUID(c, "registration_id")
+	if err != nil {
+		return err
+	}
+
+	row, err := h.DB.RegistrationFailureByID(ctx, registrationID)
+	if err != nil {
+		if errors.Is(err, debugdb.ErrRecordNotFound) {
+			return echo.NewHTTPError(http.StatusNotFound, "registration failure not found")
+		}
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to load registration failure").SetInternal(err)
+	}
+
+	images, err := h.presignDebugImages(ctx, row.ImageKeys)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to sign image urls").SetInternal(err)
+	}
+
+	return c.JSON(http.StatusOK, RegistrationFailureDetailResponse{
+		RegistrationID: row.RegistrationID,
+		ErrorCode:      row.ErrorCode,
+		Images:         images,
+		Detail:         row.Detail,
+		Device:         toDeviceResponse(row.DeviceColumns),
+		CreatedByEmail: row.CreatedByEmail,
+		CreatedAt:      row.CreatedAt,
+	})
 }
 
 func (h *Handler) listSearches(c echo.Context) error {
@@ -72,32 +111,46 @@ func (h *Handler) listSearches(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to list searches").SetInternal(err)
 	}
 
-	urls, err := h.presignRows(ctx, len(rows), func(i int) []string { return rows[i].ImageKeys })
+	thumbs, err := h.presignThumbnails(ctx, len(rows), func(i int) []string { return rows[i].ImageKeys })
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to sign image urls").SetInternal(err)
 	}
 
-	out := make([]SearchRecordResponse, len(rows))
-	for i := range rows {
-		matched, err := h.toMatchedAnimal(ctx, &rows[i])
-		if err != nil {
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to sign image urls").SetInternal(err)
-		}
-		out[i] = SearchRecordResponse{
-			ID:        rows[i].ID,
-			Decision:  rows[i].Decision,
-			Score:     rows[i].Score,
-			ErrorCode: rows[i].ErrorCode,
-			Verified:  rows[i].Verified,
-			Matched:   matched,
-			ImageURLs: urls[i],
-			Detail:    rows[i].Detail,
-			Device:    toDeviceResponse(rows[i].DeviceColumns),
-			CreatedBy: rows[i].CreatedBy,
-			CreatedAt: rows[i].CreatedAt,
+	out := make([]SearchListItem, len(rows))
+	for i, r := range rows {
+		out[i] = SearchListItem{
+			SearchID:       r.SearchID,
+			Decision:       r.Decision,
+			Verified:       r.Verified,
+			Score:          r.Score,
+			ErrorCode:      r.ErrorCode,
+			GodhaarID:      r.GodhaarID,
+			ThumbnailURL:   thumbs[i],
+			Device:         toDeviceResponse(r.DeviceColumns),
+			CreatedByEmail: r.CreatedByEmail,
+			CreatedAt:      r.CreatedAt,
 		}
 	}
 	return c.JSON(http.StatusOK, out)
+}
+
+func (h *Handler) getSearch(c echo.Context) error {
+	ctx := c.Request().Context()
+
+	searchID, err := pathUUID(c, "search_id")
+	if err != nil {
+		return err
+	}
+
+	row, err := h.DB.SearchByID(ctx, searchID)
+	if err != nil {
+		if errors.Is(err, debugdb.ErrRecordNotFound) {
+			return echo.NewHTTPError(http.StatusNotFound, "search record not found")
+		}
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to load search record").SetInternal(err)
+	}
+
+	return h.respondWithSearchDetail(c, row)
 }
 
 // verifySearch records, or revises, a developer's judgement on a match. It is
@@ -106,9 +159,9 @@ func (h *Handler) listSearches(c echo.Context) error {
 func (h *Handler) verifySearch(c echo.Context) error {
 	ctx := c.Request().Context()
 
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	searchID, err := pathUUID(c, "search_id")
 	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, "invalid search record id")
+		return err
 	}
 
 	var req VerifyRequest
@@ -119,7 +172,7 @@ func (h *Handler) verifySearch(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "verified must be one of: yes, no, not_verified")
 	}
 
-	row, err := h.DB.UpdateSearchVerification(ctx, id, req.Verified)
+	row, err := h.DB.UpdateSearchVerification(ctx, searchID, req.Verified)
 	if err != nil {
 		switch {
 		case errors.Is(err, debugdb.ErrRecordNotFound):
@@ -131,61 +184,68 @@ func (h *Handler) verifySearch(c echo.Context) error {
 		}
 	}
 
-	urls, err := h.presignKeys(ctx, row.ImageKeys)
+	// Answering with the same shape as GET /searches/:search_id means the
+	// dashboard can swap the card it just acted on without a refetch.
+	return h.respondWithSearchDetail(c, row)
+}
+
+func (h *Handler) respondWithSearchDetail(c echo.Context, row *debugdb.SearchRecordRow) error {
+	ctx := c.Request().Context()
+
+	images, err := h.presignDebugImages(ctx, row.ImageKeys)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to sign image urls").SetInternal(err)
 	}
-	matched, err := h.toMatchedAnimal(ctx, row)
+	matched, err := h.matchedAnimal(ctx, row.GodhaarID)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to sign image urls").SetInternal(err)
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to load matched animal").SetInternal(err)
 	}
 
-	return c.JSON(http.StatusOK, SearchRecordResponse{
-		ID:        row.ID,
-		Decision:  row.Decision,
-		Score:     row.Score,
-		ErrorCode: row.ErrorCode,
-		Verified:  row.Verified,
-		Matched:   matched,
-		ImageURLs: urls,
-		Detail:    row.Detail,
-		Device:    toDeviceResponse(row.DeviceColumns),
-		CreatedBy: row.CreatedBy,
-		CreatedAt: row.CreatedAt,
+	return c.JSON(http.StatusOK, SearchDetailResponse{
+		SearchID:       row.SearchID,
+		Decision:       row.Decision,
+		Verified:       row.Verified,
+		Score:          row.Score,
+		ErrorCode:      row.ErrorCode,
+		Images:         images,
+		Matched:        matched,
+		Detail:         row.Detail,
+		Device:         toDeviceResponse(row.DeviceColumns),
+		CreatedByEmail: row.CreatedByEmail,
+		CreatedAt:      row.CreatedAt,
 	})
 }
 
-func (h *Handler) toMatchedAnimal(ctx context.Context, r *debugdb.SearchRecordRow) (*MatchedAnimalResponse, error) {
-	if r.GodhaarID == nil {
+// matchedAnimal resolves the animal a search named, if it named one.
+func (h *Handler) matchedAnimal(ctx context.Context, godhaarID *string) (*MatchedAnimalResponse, error) {
+	if godhaarID == nil {
 		return nil, nil
 	}
 
-	matched := &MatchedAnimalResponse{
-		GodhaarID:   *r.GodhaarID,
-		Type:        r.MatchedType,
-		Breed:       r.MatchedBreed,
-		Gender:      r.MatchedGender,
-		Age:         r.MatchedAge,
-		BodyColor:   r.MatchedBodyColor,
-		MuzzleColor: r.MatchedMuzzleColor,
-		HornShape:   r.MatchedHornShape,
-		Village:     r.MatchedVillage,
-		Mandal:      r.MatchedMandal,
-		District:    r.MatchedDistrict,
-		State:       r.MatchedState,
-		// The join produced no row, so the animal this search pointed at is
-		// gone. The record still stands as evidence of what the model said.
-		Deleted: r.MatchedType == nil,
+	stored, found, err := h.DB.MatchedAnimalImages(ctx, *godhaarID)
+	if err != nil {
+		return nil, err
+	}
+	// The animal this search pointed at is gone. The record still stands as
+	// evidence of what the model said, so the id is reported without it.
+	if !found {
+		return &MatchedAnimalResponse{
+			GodhaarID: *godhaarID,
+			Images:    []ImageResponse{},
+			Deleted:   true,
+		}, nil
 	}
 
-	if r.MatchedImageKey != nil {
-		url, err := h.Storage.PresignedURL(ctx, *r.MatchedImageKey)
+	images := make([]ImageResponse, len(stored))
+	for i, img := range stored {
+		url, err := h.Storage.PresignedURL(ctx, img.ImageKey)
 		if err != nil {
 			return nil, err
 		}
-		matched.ImageURL = &url
+		images[i] = ImageResponse{Slot: img.ImageType, Sequence: img.Sequence, URL: url}
 	}
-	return matched, nil
+
+	return &MatchedAnimalResponse{GodhaarID: *godhaarID, Images: images}, nil
 }
 
 func toDeviceResponse(d debugdb.DeviceColumns) DeviceResponse {
@@ -197,21 +257,40 @@ func toDeviceResponse(d debugdb.DeviceColumns) DeviceResponse {
 	}
 }
 
-// presignRows signs every row's images concurrently. Signing is a local
-// operation for both storage backends, but a full listing multiplies it by the
-// number of records, so it is worth not doing serially.
-func (h *Handler) presignRows(ctx context.Context, n int, keysAt func(int) []string) ([][]string, error) {
-	out := make([][]string, n)
+// pathUUID reads and validates a record id from the path.
+//
+// Validating here rather than letting the database reject it is what keeps a
+// malformed id a 400 instead of a 500: an unparseable uuid reaches Postgres as
+// an invalid-input error, which is indistinguishable from a real fault by the
+// time it comes back.
+func pathUUID(c echo.Context, name string) (string, error) {
+	raw := c.Param(name)
+	if _, err := uuid.Parse(raw); err != nil {
+		return "", echo.NewHTTPError(http.StatusBadRequest, "invalid "+name)
+	}
+	return raw, nil
+}
+
+// presignThumbnails signs one image per row — the card only shows the first —
+// concurrently. Signing is a local operation for both storage backends, but a
+// full listing multiplies it by the number of records, so it is worth not doing
+// serially.
+func (h *Handler) presignThumbnails(ctx context.Context, n int, keysAt func(int) []string) ([]*string, error) {
+	out := make([]*string, n)
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(8)
 	for i := range n {
 		g.Go(func() error {
-			urls, err := h.presignKeys(gctx, keysAt(i))
+			keys := keysAt(i)
+			if len(keys) == 0 {
+				return nil
+			}
+			url, err := h.Storage.PresignedURL(gctx, keys[0])
 			if err != nil {
 				return err
 			}
-			out[i] = urls
+			out[i] = &url
 			return nil
 		})
 	}
@@ -221,14 +300,44 @@ func (h *Handler) presignRows(ctx context.Context, n int, keysAt func(int) []str
 	return out, nil
 }
 
-func (h *Handler) presignKeys(ctx context.Context, keys []string) ([]string, error) {
-	urls := make([]string, 0, len(keys))
+// presignDebugImages signs a record's photos and labels each with the slot it
+// was captured for.
+func (h *Handler) presignDebugImages(ctx context.Context, keys []string) ([]ImageResponse, error) {
+	images := make([]ImageResponse, 0, len(keys))
 	for _, key := range keys {
 		url, err := h.Storage.PresignedURL(ctx, key)
 		if err != nil {
 			return nil, err
 		}
-		urls = append(urls, url)
+		slot, sequence := slotFromKey(key)
+		images = append(images, ImageResponse{Slot: slot, Sequence: sequence, URL: url})
 	}
-	return urls, nil
+	return images, nil
+}
+
+// debugSlots are the slots a debug capture can hold. Side and certificate
+// images are never captured — only what the model was actually shown.
+var debugSlots = []string{"front", "muzzle", "left", "right"}
+
+// slotFromKey recovers which photo a debug object key holds.
+//
+// The keys are written as debug/{uuid}/{slot}{sequence}{ext}, so the slot is
+// carried by the name rather than by a column. That is worth reading back
+// rather than storing twice, but it is also the kind of thing that breaks
+// quietly, so an unrecognised name degrades to "unknown" instead of failing the
+// request — a photo whose slot cannot be read is still worth showing.
+func slotFromKey(key string) (string, int) {
+	base := strings.TrimSuffix(path.Base(key), path.Ext(key))
+
+	for _, slot := range debugSlots {
+		if !strings.HasPrefix(base, slot) {
+			continue
+		}
+		sequence, err := strconv.Atoi(strings.TrimPrefix(base, slot))
+		if err != nil {
+			return "unknown", 0
+		}
+		return slot, sequence
+	}
+	return "unknown", 0
 }

@@ -54,19 +54,24 @@ func (h *Handler) listGoshalas(c echo.Context) error {
 	}
 
 	out := make([]GoshalaResponse, len(rows))
-	for i, g := range rows {
+	for i := range rows {
 		// A missing photo is not worth failing the whole list over — the
-		// dashboard needs the names to render a picker at all.
-		url, err := h.Storage.PresignedURL(ctx, g.PhotoKey)
+		// dashboard needs the names to render a picker at all, so an unsigned
+		// photo degrades that one row instead of the response.
+		url, err := h.Storage.PresignedURL(ctx, rows[i].PhotoKey)
 		if err != nil {
 			url = ""
 		}
 		out[i] = GoshalaResponse{
-			PublicID: g.PublicID, Name: g.Name,
-			Village: g.Village, Mandal: g.Mandal,
-			District: g.District, State: g.State,
-			Latitude: g.Latitude, Longitude: g.Longitude,
-			PhotoURL: url,
+			PublicID:  rows[i].PublicID,
+			Name:      rows[i].Name,
+			State:     rows[i].State,
+			District:  rows[i].District,
+			Mandal:    rows[i].Mandal,
+			Village:   rows[i].Village,
+			Latitude:  rows[i].Latitude,
+			Longitude: rows[i].Longitude,
+			PhotoURL:  url,
 		}
 	}
 	return c.JSON(http.StatusOK, out)
@@ -152,13 +157,15 @@ func (h *Handler) runAnalysis(ctx context.Context, requestID int64, goshala *cct
 		InferenceJobID:    state.jobID,
 		SourceVideoKey:    &state.sourceKey,
 		AnnotatedVideoKey: state.annotatedKey,
-		TotalClearAnimals: state.cattleInView,
-		TotalAnimals:      state.cattleObserved,
+		TotalAnimals:      state.totalAnimals,
+		TotalClearAnimals: state.totalClearAnimals,
 		Detail:            detail,
 	}); err != nil {
-		return nil, echo.NewHTTPError(http.StatusInternalServerError, httperr.Response{
-			Message: "The analysis finished but could not be saved.",
-		}).SetInternal(err)
+		// The work succeeded and only the write failed, but the row still has to
+		// reach a terminal state: leaving it running would strand it there for
+		// good, and there is no result to read back from it either way. The
+		// distinct error code is what tells the two apart in the history.
+		return nil, h.failRequest(ctx, state, fmt.Errorf("%w: %w", ErrResultNotSaved, err))
 	}
 
 	return h.presentResult(ctx, state)
@@ -174,10 +181,10 @@ type analysisState struct {
 	sourcePath string
 	sourceKey  string
 
-	jobID          string
-	annotatedKey   string
-	cattleInView   int
-	cattleObserved int
+	jobID             string
+	annotatedKey      string
+	totalAnimals      int
+	totalClearAnimals int
 
 	// cleanupErr records a failure to tidy up the inference server's copy of
 	// the job. It never changes the outcome — the analysis is complete either
@@ -250,8 +257,8 @@ func (h *Handler) analyseAndStoreAnnotated(ctx context.Context, s *analysisState
 		return err
 	}
 	s.jobID = result.JobID
-	s.cattleInView = result.CattleInView
-	s.cattleObserved = result.CattleObserved
+	s.totalAnimals = result.TotalAnimals
+	s.totalClearAnimals = result.TotalClearAnimals
 
 	annotated, err := h.Inference.FetchAnnotatedVideo(ctx, result.JobID)
 	if err != nil {
@@ -292,8 +299,8 @@ func (h *Handler) presentResult(ctx context.Context, s *analysisState) (*Analysi
 		RequestID:         s.requestID,
 		Status:            cctvdb.StatusSucceeded,
 		Goshala:           toGoshalaSummary(s.goshala),
-		CattleInView:      &s.cattleInView,
-		CattleObserved:    &s.cattleObserved,
+		TotalAnimals:      &s.totalAnimals,
+		TotalClearAnimals: &s.totalClearAnimals,
 		AnnotatedVideoURL: &annotatedURL,
 	}
 	if sourceURL != "" {

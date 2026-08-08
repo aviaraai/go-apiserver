@@ -50,11 +50,12 @@ func (h *Handler) captureRegistrationFailure(c echo.Context, infErr *inference.E
 	}
 
 	record := debugdb.CreateRegistrationFailure{
-		DeviceColumns: deviceColumns(c),
-		ErrorCode:     string(infErr.Code),
-		ImageKeys:     keys,
-		Detail:        detail,
-		CreatedBy:     middleware.UserIDFromContext(c),
+		DeviceColumns:  deviceColumns(c),
+		ErrorCode:      string(infErr.Code),
+		ImageKeys:      keys,
+		Detail:         detail,
+		CreatedBy:      middleware.UserIDFromContext(c),
+		CreatedByEmail: middleware.EmailFromContext(c),
 	}
 	return errors.Join(uploadErr, h.DebugDB.RecordRegistrationFailure(ctx, record))
 }
@@ -86,7 +87,8 @@ func (h *Handler) captureSearch(c echo.Context, v verdict, front, muzzle *imageF
 			"top_k":          searchTopK,
 			"radius_km":      searchRadiusKm,
 		},
-		CreatedBy: middleware.UserIDFromContext(c),
+		CreatedBy:      middleware.UserIDFromContext(c),
+		CreatedByEmail: middleware.EmailFromContext(c),
 	}
 	// The table only accepts a godhaar_id on a MATCH: a REVIEW is explicitly
 	// not a claim about which animal this is, and promoting it to the column
@@ -116,12 +118,13 @@ func (h *Handler) captureSearchFailure(c echo.Context, infErr *inference.Error, 
 
 	code := string(infErr.Code)
 	record := debugdb.CreateSearchRecord{
-		DeviceColumns: deviceColumns(c),
-		Decision:      debugdb.DecisionFailed,
-		ErrorCode:     &code,
-		ImageKeys:     keys,
-		Detail:        inferenceDetail(infErr),
-		CreatedBy:     middleware.UserIDFromContext(c),
+		DeviceColumns:  deviceColumns(c),
+		Decision:       debugdb.DecisionFailed,
+		ErrorCode:      &code,
+		ImageKeys:      keys,
+		Detail:         inferenceDetail(infErr),
+		CreatedBy:      middleware.UserIDFromContext(c),
+		CreatedByEmail: middleware.EmailFromContext(c),
 	}
 	return errors.Join(uploadErr, h.DebugDB.RecordSearch(ctx, record))
 }

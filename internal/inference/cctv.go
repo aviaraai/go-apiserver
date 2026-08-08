@@ -29,18 +29,19 @@ const (
 type CCTVResult struct {
 	JobID string
 
-	// CattleInView is the peak number visible in any single frame
-	// (max_cattle_in_frame). Trustworthy for a fixed camera; undercounts one
-	// panning across a herd.
-	CattleInView int
+	// TotalAnimals is the peak number visible in any single frame
+	// (max_cattle_in_frame), clear or not. Trustworthy for a fixed camera;
+	// undercounts one panning across a herd.
+	TotalAnimals int
 
-	// CattleObserved is the number of distinct tracked animals
-	// (unique_tracked_cattle). Trustworthy for a panning shot; can overcount a
-	// static herd when the tracker churns IDs.
+	// TotalClearAnimals is the number of distinct tracked animals
+	// (unique_tracked_cattle) — the close-by ones the model saw clearly enough
+	// to follow. Trustworthy for a panning shot; can overcount a static herd
+	// when the tracker churns IDs.
 	//
 	// Neither figure is a correction of the other, which is why both are
 	// surfaced rather than one being picked here.
-	CattleObserved int
+	TotalClearAnimals int
 }
 
 // CCTVClient runs one video through the inference server's analytics pipeline.
@@ -242,9 +243,9 @@ func (c *HTTPCCTVClient) fetchResult(ctx context.Context, jobID string) (*CCTVRe
 	}
 
 	return &CCTVResult{
-		JobID:          jobID,
-		CattleInView:   out.MaxCattleInFrame,
-		CattleObserved: out.UniqueTrackedCattle,
+		JobID:             jobID,
+		TotalAnimals:      out.MaxCattleInFrame,
+		TotalClearAnimals: out.UniqueTrackedCattle,
 	}, nil
 }
 

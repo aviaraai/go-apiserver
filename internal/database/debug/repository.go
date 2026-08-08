@@ -30,11 +30,11 @@ func (r *Repository) RecordRegistrationFailure(ctx context.Context, p CreateRegi
 		INSERT INTO animal_registration_failures (
 			error_code, image_keys,
 			app_version, os_version, device_model, device_manufacturer,
-			detail, created_by
+			detail, created_by, created_by_email
 		) VALUES (
 			:error_code, :image_keys::jsonb,
 			:app_version, :os_version, :device_model, :device_manufacturer,
-			:detail::jsonb, :created_by
+			:detail::jsonb, :created_by, :created_by_email
 		)`
 
 	if _, err := r.db.NamedExecContext(ctx, query, p); err != nil {
@@ -48,11 +48,11 @@ func (r *Repository) RecordSearch(ctx context.Context, p CreateSearchRecord) err
 		INSERT INTO animal_search_records (
 			decision, godhaar_id, score, error_code, image_keys,
 			app_version, os_version, device_model, device_manufacturer,
-			detail, created_by
+			detail, created_by, created_by_email
 		) VALUES (
 			:decision, :godhaar_id, :score, :error_code, :image_keys::jsonb,
 			:app_version, :os_version, :device_model, :device_manufacturer,
-			:detail::jsonb, :created_by
+			:detail::jsonb, :created_by, :created_by_email
 		)`
 
 	if _, err := r.db.NamedExecContext(ctx, query, p); err != nil {
@@ -61,53 +61,107 @@ func (r *Repository) RecordSearch(ctx context.Context, p CreateSearchRecord) err
 	return nil
 }
 
-func (r *Repository) ListRegistrationFailures(ctx context.Context) ([]RegistrationFailureRow, error) {
+// ListRegistrationFailures returns every failure, newest first, without the
+// detail payload. Read RegistrationFailureByID for that.
+func (r *Repository) ListRegistrationFailures(ctx context.Context) ([]RegistrationFailureListRow, error) {
 	const query = `
-		SELECT id, error_code, image_keys,
+		SELECT registration_id::text AS registration_id, error_code, image_keys,
 		       app_version, os_version, device_model, device_manufacturer,
-		       detail, created_by, created_at
+		       created_by, created_by_email, created_at
 		FROM animal_registration_failures
 		ORDER BY created_at DESC, id DESC;`
 
-	var rows []RegistrationFailureRow
+	var rows []RegistrationFailureListRow
 	if err := r.db.SelectContext(ctx, &rows, query); err != nil {
 		return nil, fmt.Errorf("list registration failures: %w", err)
 	}
 	return rows, nil
 }
 
-// ListSearches returns every search attempt, newest first, with the matched
-// animal's current details pulled in by join rather than copied into the record
-// at write time. The front image is picked out the same way the mobile animal
-// listing does it.
-func (r *Repository) ListSearches(ctx context.Context) ([]SearchRecordRow, error) {
+func (r *Repository) RegistrationFailureByID(ctx context.Context, registrationID string) (*RegistrationFailureRow, error) {
 	const query = `
-		SELECT s.id, s.decision, s.godhaar_id, s.score, s.error_code, s.verified,
-		       s.image_keys,
-		       s.app_version, s.os_version, s.device_model, s.device_manufacturer,
-		       s.detail, s.created_by, s.created_at,
-		       a.animal_type  AS matched_type,
-		       a.breed        AS matched_breed,
-		       a.gender       AS matched_gender,
-		       a.age          AS matched_age,
-		       a.body_color   AS matched_body_color,
-		       a.muzzle_color AS matched_muzzle_color,
-		       a.horn_shape   AS matched_horn_shape,
-		       a.village      AS matched_village,
-		       a.mandal       AS matched_mandal,
-		       a.district     AS matched_district,
-		       a.state        AS matched_state,
-		       i.image_key    AS matched_image_key
-		FROM animal_search_records s
-		LEFT JOIN animals a ON a.godhaar_id = s.godhaar_id
-		LEFT JOIN images  i ON i.animal_id = a.id AND i.image_type = 'front' AND i.sequence = 1
-		ORDER BY s.created_at DESC, s.id DESC;`
+		SELECT registration_id::text AS registration_id, error_code, image_keys,
+		       app_version, os_version, device_model, device_manufacturer,
+		       detail, created_by, created_by_email, created_at
+		FROM animal_registration_failures
+		WHERE registration_id = $1::uuid;`
 
-	var rows []SearchRecordRow
+	var row RegistrationFailureRow
+	if err := r.db.GetContext(ctx, &row, query, registrationID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrRecordNotFound
+		}
+		return nil, fmt.Errorf("get registration failure %s: %w", registrationID, err)
+	}
+	return &row, nil
+}
+
+// ListSearches returns every search attempt, newest first. No join: decision,
+// verified and godhaar_id are all on the record, which is everything the
+// dashboard filters on.
+func (r *Repository) ListSearches(ctx context.Context) ([]SearchRecordListRow, error) {
+	const query = `
+		SELECT search_id::text AS search_id, decision, godhaar_id, score, error_code, verified, image_keys,
+		       app_version, os_version, device_model, device_manufacturer,
+		       created_by, created_by_email, created_at
+		FROM animal_search_records
+		ORDER BY created_at DESC, id DESC;`
+
+	var rows []SearchRecordListRow
 	if err := r.db.SelectContext(ctx, &rows, query); err != nil {
 		return nil, fmt.Errorf("list searches: %w", err)
 	}
 	return rows, nil
+}
+
+func (r *Repository) SearchByID(ctx context.Context, searchID string) (*SearchRecordRow, error) {
+	const query = `
+		SELECT search_id::text AS search_id, decision, godhaar_id, score, error_code, verified, image_keys,
+		       app_version, os_version, device_model, device_manufacturer,
+		       detail, created_by, created_by_email, created_at
+		FROM animal_search_records
+		WHERE search_id = $1::uuid;`
+
+	var row SearchRecordRow
+	if err := r.db.GetContext(ctx, &row, query, searchID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrRecordNotFound
+		}
+		return nil, fmt.Errorf("get search record %s: %w", searchID, err)
+	}
+	return &row, nil
+}
+
+// MatchedAnimalImages returns the identifying photos of the animal a search
+// matched — the four slots the model compares against, never the certificates.
+//
+// found is false when the godhaar_id no longer resolves. That is a real state
+// worth reporting rather than an error: the search record stands as evidence of
+// what the model said even after the animal it named has been deleted. An
+// animal that exists but has no images returns found with an empty slice, which
+// is why existence is checked separately from the image rows.
+func (r *Repository) MatchedAnimalImages(ctx context.Context, godhaarID string) ([]AnimalImage, bool, error) {
+	var animalID int64
+	err := r.db.GetContext(ctx, &animalID,
+		`SELECT id FROM animals WHERE godhaar_id = $1;`, godhaarID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("look up matched animal %s: %w", godhaarID, err)
+	}
+
+	const query = `
+		SELECT image_type, sequence, image_key
+		FROM images
+		WHERE animal_id = $1 AND image_type IN ('front', 'muzzle', 'left', 'right')
+		ORDER BY image_type, sequence;`
+
+	var images []AnimalImage
+	if err := r.db.SelectContext(ctx, &images, query, animalID); err != nil {
+		return nil, false, fmt.Errorf("list images for matched animal %s: %w", godhaarID, err)
+	}
+	return images, true, nil
 }
 
 // UpdateSearchVerification sets the human verdict on a matched search. It is
@@ -117,18 +171,18 @@ func (r *Repository) ListSearches(ctx context.Context) ([]SearchRecordRow, error
 // The decision = 'MATCH' guard in the WHERE clause is what makes the two
 // outcomes distinguishable: a row that exists but is not a match reports
 // ErrNotVerifiable rather than a bare not-found.
-func (r *Repository) UpdateSearchVerification(ctx context.Context, id int64, verified string) (*SearchRecordRow, error) {
+func (r *Repository) UpdateSearchVerification(ctx context.Context, searchID, verified string) (*SearchRecordRow, error) {
 	const query = `
 		UPDATE animal_search_records
 		SET verified = $2
-		WHERE id = $1 AND decision = 'MATCH'
-		RETURNING id, decision, godhaar_id, score, error_code, verified,
+		WHERE search_id = $1::uuid AND decision = 'MATCH'
+		RETURNING search_id::text AS search_id, decision, godhaar_id, score, error_code, verified,
 		          image_keys,
 		          app_version, os_version, device_model, device_manufacturer,
-		          detail, created_by, created_at;`
+		          detail, created_by, created_by_email, created_at;`
 
 	var row SearchRecordRow
-	err := r.db.GetContext(ctx, &row, query, id, verified)
+	err := r.db.GetContext(ctx, &row, query, searchID, verified)
 	if err == nil {
 		return &row, nil
 	}
@@ -140,7 +194,7 @@ func (r *Repository) UpdateSearchVerification(ctx context.Context, id int64, ver
 	// caller can answer 404 or 409 rather than guessing.
 	var decision string
 	switch err := r.db.GetContext(ctx, &decision,
-		`SELECT decision FROM animal_search_records WHERE id = $1;`, id); {
+		`SELECT decision FROM animal_search_records WHERE search_id = $1::uuid;`, searchID); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrRecordNotFound
 	case err != nil:

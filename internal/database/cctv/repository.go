@@ -59,7 +59,7 @@ func (r *Repository) GoshalaByPublicID(ctx context.Context, publicID string) (*G
 // starts. Returns the new row's id, which every later update keys off.
 func (r *Repository) OpenRequest(ctx context.Context, p CreateRequest) (int64, error) {
 	const query = `
-		INSERT INTO cctv_analysis_requests (farmer_id, status, requested_by, requested_by_email)
+		INSERT INTO cctv_video_analytics (farmer_id, status, requested_by, requested_by_email)
 		VALUES (:farmer_id, 'running', :requested_by, :requested_by_email)
 		RETURNING id;`
 
@@ -84,7 +84,7 @@ func (r *Repository) OpenRequest(ctx context.Context, p CreateRequest) (int64, e
 
 func (r *Repository) CompleteRequest(ctx context.Context, p CompleteRequest) error {
 	const query = `
-		UPDATE cctv_analysis_requests
+		UPDATE cctv_video_analytics
 		SET status = 'succeeded',
 		    inference_job_id = :inference_job_id,
 		    source_video_key = :source_video_key,
@@ -100,7 +100,7 @@ func (r *Repository) CompleteRequest(ctx context.Context, p CompleteRequest) err
 
 func (r *Repository) FailRequest(ctx context.Context, p FailRequest) error {
 	const query = `
-		UPDATE cctv_analysis_requests
+		UPDATE cctv_video_analytics
 		SET status = 'failed',
 		    inference_job_id = :inference_job_id,
 		    source_video_key = :source_video_key,
@@ -148,7 +148,7 @@ func (r *Repository) ListRequests(ctx context.Context, goshalaPublicID *string) 
 		       f.mandal    AS goshala_mandal,
 		       f.district  AS goshala_district,
 		       f.state     AS goshala_state
-		FROM cctv_analysis_requests c
+		FROM cctv_video_analytics c
 		JOIN farmers f ON f.id = c.farmer_id
 		WHERE ($1::text IS NULL OR f.public_id = $1)
 		ORDER BY c.requested_at DESC, c.id DESC;`

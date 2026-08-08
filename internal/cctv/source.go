@@ -11,6 +11,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 )
 
 // ErrSourceNotImplemented is returned by NotImplementedSource. Handlers report
@@ -54,3 +56,31 @@ type NotImplementedSource struct{}
 func (NotImplementedSource) FetchLatest(context.Context, string) (*Video, error) {
 	return nil, ErrSourceNotImplemented
 }
+
+// NaiveImplementationSource serves the same file from disk for every goshala,
+// ignoring which one was asked for. It exists to exercise the rest of the
+// pipeline before the camera integration lands.
+type NaiveImplementationSource struct{}
+
+func (NaiveImplementationSource) FetchLatest(context.Context, string) (*Video, error) {
+	f, err := os.Open(naiveVideoPath)
+	if err != nil {
+		return nil, err
+	}
+	// Not closed here, deliberately. The open file *is* the Video's Body, and
+	// ownership of it passes to the caller — which closes it once the clip has
+	// been spooled. Closing it on the way out would hand back a stream that is
+	// already shut, and every read of it would fail with ErrClosed.
+	return &Video{
+		// f.Name() is the path Open was given, not the base name. Only the
+		// extension is actually used downstream — for the storage key — but a
+		// relative path would put "../" in it.
+		Filename:    filepath.Base(f.Name()),
+		ContentType: "video/mp4",
+		Body:        f,
+	}, nil
+}
+
+// naiveVideoPath is relative to the process working directory, so it resolves
+// only when the server is started from the directory this was written against.
+const naiveVideoPath = "../video_analytics.mp4"

@@ -18,7 +18,17 @@ import (
 const (
 	codeSourceUnavailable = "CCTV_SOURCE_UNAVAILABLE"
 	codeStorageFailed     = "CCTV_STORAGE_FAILED"
+	codeResultNotSaved    = "CCTV_RESULT_NOT_SAVED"
 )
+
+// ErrResultNotSaved marks an analysis that ran to completion but whose result
+// could not be written back.
+//
+// It is its own failure rather than a generic storage error because the two mean
+// different things to whoever reads the history: nothing was wrong with the
+// video or the model, and the annotated clip is sitting in storage — only the
+// record of it is missing.
+var ErrResultNotSaved = errors.New("analysis completed but the result could not be saved")
 
 // failureResponse maps a failure to what the admin is told. As everywhere else
 // in this service, the message is ours and the underlying error stays internal.
@@ -29,6 +39,13 @@ type failureResponse struct {
 }
 
 func classifyFailure(err error) failureResponse {
+	if errors.Is(err, ErrResultNotSaved) {
+		return failureResponse{
+			http.StatusInternalServerError, codeResultNotSaved,
+			"The analysis finished but could not be saved.",
+		}
+	}
+
 	if errors.Is(err, cctv.ErrSourceNotImplemented) {
 		return failureResponse{
 			http.StatusServiceUnavailable, codeSourceUnavailable,
@@ -143,8 +160,8 @@ func (h *Handler) listRequests(c echo.Context) error {
 				Village: r.GoshalaVillage, Mandal: r.GoshalaMandal,
 				District: r.GoshalaDistrict, State: r.GoshalaState,
 			},
-			CattleInView:      r.TotalClearAnimals,
-			CattleObserved:    r.TotalAnimals,
+			TotalAnimals:      r.TotalAnimals,
+			TotalClearAnimals: r.TotalClearAnimals,
 			AnnotatedVideoURL: h.presignOrNil(ctx, r.AnnotatedVideoKey),
 			SourceVideoURL:    h.presignOrNil(ctx, r.SourceVideoKey),
 			ErrorCode:         r.ErrorCode,

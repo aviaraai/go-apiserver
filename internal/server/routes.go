@@ -70,7 +70,7 @@ func (s *Server) RegisterRoutes() (http.Handler, error) {
 
 	// The camera integration is not written yet. Everything downstream of the
 	// fetch works; swapping this for a real Source is the only step left.
-	var cctvSource cctv.Source = cctv.NotImplementedSource{}
+	var cctvSource cctv.Source = cctv.NaiveImplementationSource{}
 
 	dbHandle := s.db.DB()
 

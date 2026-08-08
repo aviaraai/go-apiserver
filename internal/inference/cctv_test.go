@@ -92,15 +92,15 @@ func TestCCTVAnalyseBlocksUntilJobCompletes(t *testing.T) {
 	if result.JobID != "abc123" {
 		t.Errorf("JobID = %q, want abc123", result.JobID)
 	}
-	// The two counts must not be swapped: cattle_in_view is the peak in one
-	// frame (max_cattle_in_frame), cattle_observed is the distinct tracked
+	// The two counts must not be swapped: total_animals is the peak in one
+	// frame (max_cattle_in_frame), total_clear_animals is the distinct tracked
 	// count (unique_tracked_cattle). Getting these the wrong way round would
 	// be invisible without asserting on distinct values.
-	if result.CattleInView != 12 {
-		t.Errorf("CattleInView = %d, want 12 (max_cattle_in_frame)", result.CattleInView)
+	if result.TotalAnimals != 12 {
+		t.Errorf("TotalAnimals = %d, want 12 (max_cattle_in_frame)", result.TotalAnimals)
 	}
-	if result.CattleObserved != 17 {
-		t.Errorf("CattleObserved = %d, want 17 (unique_tracked_cattle)", result.CattleObserved)
+	if result.TotalClearAnimals != 17 {
+		t.Errorf("TotalClearAnimals = %d, want 17 (unique_tracked_cattle)", result.TotalClearAnimals)
 	}
 
 	if got := fake.polls.Load(); got < 3 {
