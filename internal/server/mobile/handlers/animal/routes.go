@@ -252,7 +252,7 @@ func (h *Handler) register(c echo.Context) error {
 	// Call inference server. This is what actually detects duplicates.
 	// The response shape is validated inside the client, so reaching past this
 	// point means infResp carries three embedding ids and both colour labels.
-	infResp, err := h.Inference.Register(ctx, toInferencePayloads(frontImgs), toInferencePayloads(muzzleImgs), candidates)
+	infResp, err := h.Inference.Register(ctx, toInferencePayloads(frontImgs), toInferencePayloads(muzzleImgs), candidates, req.Cost)
 	if err != nil {
 		infErr := inference.Classify(err)
 		matchedGodhaarID, matchErr := duplicateGodhaarID(infErr, faissToGodhaar)

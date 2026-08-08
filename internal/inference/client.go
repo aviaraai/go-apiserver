@@ -69,7 +69,7 @@ type SearchResponse struct {
 const registerEmbeddingCount = 3
 
 type Client interface {
-	Register(ctx context.Context, front, muzzle []ImagePayload, candidates []Candidate) (*RegisterResponse, error)
+	Register(ctx context.Context, front, muzzle []ImagePayload, candidates []Candidate, cost *float64) (*RegisterResponse, error)
 	Search(ctx context.Context, front, muzzle ImagePayload, candidateIDs []Candidate, topK int) (*SearchResponse, error)
 }
 
@@ -90,8 +90,8 @@ func NewHTTPClient(baseURL string) *HTTPClient {
 // Only the middle step can produce a domain verdict — everything the first and
 // third step can go wrong with is our own fault, and is classified as such.
 
-func (c *HTTPClient) Register(ctx context.Context, front, muzzle []ImagePayload, candidates []Candidate) (*RegisterResponse, error) {
-	body, contentType, err := buildRegisterBody(front, muzzle, candidates)
+func (c *HTTPClient) Register(ctx context.Context, front, muzzle []ImagePayload, candidates []Candidate, cost *float64) (*RegisterResponse, error) {
+	body, contentType, err := buildRegisterBody(front, muzzle, candidates, cost)
 	if err != nil {
 		return nil, transportError(CodeUnavailable, 0, err)
 	}
@@ -205,10 +205,20 @@ func validateSearchResponse(r *SearchResponse) error {
 	return nil
 }
 
-func buildRegisterBody(front, muzzle []ImagePayload, candidates []Candidate) (*bytes.Buffer, string, error) {
+func buildRegisterBody(front, muzzle []ImagePayload, candidates []Candidate, cost *float64) (*bytes.Buffer, string, error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
+	// cost is Optional[str] on the inference side: omitting the field entirely is
+	// how "not priced" is expressed, so a nil cost writes nothing rather than an
+	// empty string. The integer formatting matches Candidate.Cost above, so the
+	// query and the existing records the model compares it against are written
+	// the same way.
+	if cost != nil {
+		if err := writer.WriteField("cost", strconv.FormatInt(int64(*cost), 10)); err != nil {
+			return nil, "", fmt.Errorf("write cost field: %w", err)
+		}
+	}
 	if err := writeCandidates(writer, candidates); err != nil {
 		return nil, "", err
 	}
