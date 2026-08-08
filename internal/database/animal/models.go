@@ -18,13 +18,14 @@ type Animal struct {
 }
 
 type CandidateRow struct {
-	FaissID     int64   `db:"faiss_id"`
-	GodhaarID   string  `db:"godhaar_id"`
-	Latitude    float64 `db:"latitude"`
-	Longitude   float64 `db:"longitude"`
-	BodyColor   string  `db:"body_color"`
-	MuzzleColor string  `db:"muzzle_color"`
-	HornShape   *string `db:"horn_shape"`
+	FaissID     int64    `db:"faiss_id"`
+	GodhaarID   string   `db:"godhaar_id"`
+	Latitude    float64  `db:"latitude"`
+	Longitude   float64  `db:"longitude"`
+	BodyColor   string   `db:"body_color"`
+	MuzzleColor string   `db:"muzzle_color"`
+	HornShape   *string  `db:"horn_shape"`
+	Cost        *float64 `db:"cost"`
 }
 
 type CreateAnimalTx struct {

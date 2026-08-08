@@ -19,6 +19,7 @@ type Candidate struct {
 	BodyColor   string  `json:"body_color"`
 	MuzzleColor string  `json:"muzzle_color"`
 	HornShape   *string `json:"horn_shape"`
+	Cost        *string `json:"cost"`
 }
 
 type ImagePayload struct {

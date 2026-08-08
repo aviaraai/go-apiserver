@@ -32,9 +32,9 @@ func (r *Repository) RecordRegistrationFailure(ctx context.Context, p CreateRegi
 			app_version, os_version, device_model, device_manufacturer,
 			detail, created_by, created_by_email
 		) VALUES (
-			:error_code, :image_keys::jsonb,
+			:error_code, :image_keys,
 			:app_version, :os_version, :device_model, :device_manufacturer,
-			:detail::jsonb, :created_by, :created_by_email
+			:detail, :created_by, :created_by_email
 		)`
 
 	if _, err := r.db.NamedExecContext(ctx, query, p); err != nil {
@@ -50,9 +50,9 @@ func (r *Repository) RecordSearch(ctx context.Context, p CreateSearchRecord) err
 			app_version, os_version, device_model, device_manufacturer,
 			detail, created_by, created_by_email
 		) VALUES (
-			:decision, :godhaar_id, :score, :error_code, :image_keys::jsonb,
+			:decision, :godhaar_id, :score, :error_code, :image_keys,
 			:app_version, :os_version, :device_model, :device_manufacturer,
-			:detail::jsonb, :created_by, :created_by_email
+			:detail, :created_by, :created_by_email
 		)`
 
 	if _, err := r.db.NamedExecContext(ctx, query, p); err != nil {

@@ -34,9 +34,11 @@ func ValidVerification(s string) bool {
 	return s == VerifiedYes || s == VerifiedNo || s == VerifiedNot
 }
 
-// JSONMap is a free-form object in a jsonb column. Value renders it as text and
-// every query casts the parameter explicitly, because the driver would
-// otherwise send a []byte as bytea.
+// JSONMap is a free-form object in a jsonb column. Value renders it as a string
+// rather than []byte, which the driver would otherwise send as bytea; Postgres
+// then infers jsonb from the target column. Do not add an explicit ::jsonb cast
+// to the parameter — sqlx cannot parse `:name::type` and the whole statement
+// fails to compile. See TestNamedQueriesCompile.
 type JSONMap map[string]any
 
 func (m JSONMap) Value() (driver.Value, error) {

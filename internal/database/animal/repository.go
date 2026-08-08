@@ -71,7 +71,8 @@ func (r *Repository) FindFAISSCandidates(ctx context.Context, lat, lng, bbox flo
     a.longitude,
     a.body_color,
     a.muzzle_color,
-    a.horn_shape
+    a.horn_shape,
+    a.cost
 	FROM embeddings e
 	JOIN animals a ON e.animal_id = a.id
 	WHERE a.latitude IS NOT NULL

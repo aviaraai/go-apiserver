@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"mime/multipart"
 	"net/http"
+	"strconv"
 
 	"go-api-server/internal/database/animal"
 	debugdb "go-api-server/internal/database/debug"
@@ -228,11 +229,23 @@ func (h *Handler) register(c echo.Context) error {
 	candidates := make([]inference.Candidate, len(nearby))
 	for i, c := range nearby {
 		faissToGodhaar[c.FaissID] = c.GodhaarID
-		candidates[i] = inference.Candidate{
-			FaissID:     c.FaissID,
-			BodyColor:   c.BodyColor,
-			MuzzleColor: c.MuzzleColor,
-			HornShape:   c.HornShape,
+		if c.Cost == nil {
+			candidates[i] = inference.Candidate{
+				FaissID:     c.FaissID,
+				BodyColor:   c.BodyColor,
+				MuzzleColor: c.MuzzleColor,
+				HornShape:   c.HornShape,
+				Cost:        nil,
+			}
+		} else {
+			val := strconv.FormatInt(int64(*c.Cost), 10)
+			candidates[i] = inference.Candidate{
+				FaissID:     c.FaissID,
+				BodyColor:   c.BodyColor,
+				MuzzleColor: c.MuzzleColor,
+				HornShape:   c.HornShape,
+				Cost:        &val,
+			}
 		}
 	}
 
