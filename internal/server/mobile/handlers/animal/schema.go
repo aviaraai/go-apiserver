@@ -16,6 +16,7 @@ type RegisterAnimalRequest struct {
 	Age              int      `form:"age"`
 	Cost             *float64 `form:"cost"`
 	InsurancePremium *float64 `form:"insurance_premium"`
+	TagID            *string  `form:"tag_id"`
 	State            string   `form:"state"`
 	District         string   `form:"district"`
 	Mandal           string   `form:"mandal"`
@@ -28,6 +29,7 @@ type RegisterAnimalRequest struct {
 type SearchAnimalRequest struct {
 	Latitude  float64 `form:"latitude"`
 	Longitude float64 `form:"longitude"`
+	TagID     *string `form:"tag_id"`
 }
 
 type AnimalResponse struct {
@@ -39,6 +41,7 @@ type AnimalResponse struct {
 	Age              int      `json:"age"`
 	Cost             *float64 `json:"cost"`
 	InsurancePremium *float64 `json:"insurance_premium"`
+	TagID            *string  `json:"tag_id"`
 	State            string   `json:"state"`
 	District         string   `json:"district"`
 	Mandal           string   `json:"mandal"`

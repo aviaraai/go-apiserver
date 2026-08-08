@@ -19,7 +19,7 @@ type Candidate struct {
 	BodyColor   string  `json:"body_color"`
 	MuzzleColor string  `json:"muzzle_color"`
 	HornShape   *string `json:"horn_shape"`
-	Cost        *string `json:"cost"`
+	TagID       *string `json:"tag_no"`
 }
 
 type ImagePayload struct {
@@ -69,8 +69,8 @@ type SearchResponse struct {
 const registerEmbeddingCount = 3
 
 type Client interface {
-	Register(ctx context.Context, front, muzzle []ImagePayload, candidates []Candidate, cost *float64) (*RegisterResponse, error)
-	Search(ctx context.Context, front, muzzle ImagePayload, candidateIDs []Candidate, topK int) (*SearchResponse, error)
+	Register(ctx context.Context, front, muzzle []ImagePayload, candidates []Candidate, tagID *string) (*RegisterResponse, error)
+	Search(ctx context.Context, front, muzzle ImagePayload, candidateIDs []Candidate, topK int, tagID *string) (*SearchResponse, error)
 }
 
 type HTTPClient struct {
@@ -90,8 +90,8 @@ func NewHTTPClient(baseURL string) *HTTPClient {
 // Only the middle step can produce a domain verdict — everything the first and
 // third step can go wrong with is our own fault, and is classified as such.
 
-func (c *HTTPClient) Register(ctx context.Context, front, muzzle []ImagePayload, candidates []Candidate, cost *float64) (*RegisterResponse, error) {
-	body, contentType, err := buildRegisterBody(front, muzzle, candidates, cost)
+func (c *HTTPClient) Register(ctx context.Context, front, muzzle []ImagePayload, candidates []Candidate, tagID *string) (*RegisterResponse, error) {
+	body, contentType, err := buildRegisterBody(front, muzzle, candidates, tagID)
 	if err != nil {
 		return nil, transportError(CodeUnavailable, 0, err)
 	}
@@ -108,8 +108,8 @@ func (c *HTTPClient) Register(ctx context.Context, front, muzzle []ImagePayload,
 	return &out, nil
 }
 
-func (c *HTTPClient) Search(ctx context.Context, front, muzzle ImagePayload, candidates []Candidate, topK int) (*SearchResponse, error) {
-	body, contentType, err := buildSearchBody(front, muzzle, candidates, topK)
+func (c *HTTPClient) Search(ctx context.Context, front, muzzle ImagePayload, candidates []Candidate, topK int, tagID *string) (*SearchResponse, error) {
+	body, contentType, err := buildSearchBody(front, muzzle, candidates, topK, tagID)
 	if err != nil {
 		return nil, transportError(CodeUnavailable, 0, err)
 	}
@@ -205,7 +205,7 @@ func validateSearchResponse(r *SearchResponse) error {
 	return nil
 }
 
-func buildRegisterBody(front, muzzle []ImagePayload, candidates []Candidate, cost *float64) (*bytes.Buffer, string, error) {
+func buildRegisterBody(front, muzzle []ImagePayload, candidates []Candidate, tagID *string) (*bytes.Buffer, string, error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
@@ -214,8 +214,8 @@ func buildRegisterBody(front, muzzle []ImagePayload, candidates []Candidate, cos
 	// empty string. The integer formatting matches Candidate.Cost above, so the
 	// query and the existing records the model compares it against are written
 	// the same way.
-	if cost != nil {
-		if err := writer.WriteField("cost", strconv.FormatInt(int64(*cost), 10)); err != nil {
+	if tagID != nil {
+		if err := writer.WriteField("tag_no", *tagID); err != nil {
 			return nil, "", fmt.Errorf("write cost field: %w", err)
 		}
 	}
@@ -234,9 +234,15 @@ func buildRegisterBody(front, muzzle []ImagePayload, candidates []Candidate, cos
 	return body, writer.FormDataContentType(), nil
 }
 
-func buildSearchBody(front, muzzle ImagePayload, candidates []Candidate, topK int) (*bytes.Buffer, string, error) {
+func buildSearchBody(front, muzzle ImagePayload, candidates []Candidate, topK int, tagID *string) (*bytes.Buffer, string, error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
+
+	if tagID != nil {
+		if err := writer.WriteField("tag_no", *tagID); err != nil {
+			return nil, "", err
+		}
+	}
 
 	if err := writeCandidates(writer, candidates); err != nil {
 		return nil, "", err

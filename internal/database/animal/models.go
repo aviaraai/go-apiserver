@@ -10,6 +10,7 @@ type Animal struct {
 	Age              int      `db:"age"`
 	Cost             *float64 `db:"cost"`
 	InsurancePremium *float64 `db:"insurance_premium"`
+	TagID            *string  `db:"tag_id"`
 	State            string   `db:"state"`
 	District         string   `db:"district"`
 	Mandal           string   `db:"mandal"`
@@ -18,14 +19,14 @@ type Animal struct {
 }
 
 type CandidateRow struct {
-	FaissID     int64    `db:"faiss_id"`
-	GodhaarID   string   `db:"godhaar_id"`
-	Latitude    float64  `db:"latitude"`
-	Longitude   float64  `db:"longitude"`
-	BodyColor   string   `db:"body_color"`
-	MuzzleColor string   `db:"muzzle_color"`
-	HornShape   *string  `db:"horn_shape"`
-	Cost        *float64 `db:"cost"`
+	FaissID     int64   `db:"faiss_id"`
+	GodhaarID   string  `db:"godhaar_id"`
+	Latitude    float64 `db:"latitude"`
+	Longitude   float64 `db:"longitude"`
+	BodyColor   string  `db:"body_color"`
+	MuzzleColor string  `db:"muzzle_color"`
+	HornShape   *string `db:"horn_shape"`
+	TagID       *string `db:"tag_id"`
 }
 
 type CreateAnimalTx struct {
@@ -47,6 +48,7 @@ type CreateAnimal struct {
 	District         string   `db:"district"`
 	Mandal           string   `db:"mandal"`
 	Village          string   `db:"village"`
+	TagID            *string  `db:"tag_id"`
 	BodyColor        string   `db:"body_color"`
 	MuzzleColor      string   `db:"muzzle_color"`
 	HornShape        *string  `db:"horn_shape"`

@@ -38,7 +38,7 @@ func (r *Repository) UnassignedAnimalsByUser(ctx context.Context, userID string)
 }
 
 func (r *Repository) GetAnimal(ctx context.Context, godhaarID string) (*Animal, error) {
-	const query = `SELECT f.public_id, a.godhaar_id, a.animal_type, a.gender, a.breed, a.age, a.cost, a.insurance_premium, a.state, a.district, a.mandal, a.village FROM animals AS a LEFT JOIN farmers AS f ON f.id=a.farmer_id WHERE godhaar_id=$1;`
+	const query = `SELECT f.public_id, a.godhaar_id, a.animal_type, a.gender, a.breed, a.age, a.cost, a.insurance_premium, a.tag_id, a.state, a.district, a.mandal, a.village FROM animals AS a LEFT JOIN farmers AS f ON f.id=a.farmer_id WHERE godhaar_id=$1;`
 
 	var animal Animal
 	if err := r.db.GetContext(ctx, &animal, query, godhaarID); err != nil {
@@ -72,7 +72,7 @@ func (r *Repository) FindFAISSCandidates(ctx context.Context, lat, lng, bbox flo
     a.body_color,
     a.muzzle_color,
     a.horn_shape,
-    a.cost
+    a.tag_id
 	FROM embeddings e
 	JOIN animals a ON e.animal_id = a.id
 	WHERE a.latitude IS NOT NULL
@@ -94,13 +94,13 @@ func (r *Repository) CreateAnimalWithEmbeddingsAndImages(ctx context.Context, pa
 	const insertAnimalReturning = `
 		INSERT INTO animals (
 		    godhaar_id, farmer_id, animal_type, gender, breed, age, cost, insurance_premium,
-		    state, district, mandal, village, latitude, longitude, health_remarks,
+		    state, district, mandal, village, tag_id, latitude, longitude, health_remarks,
 		    body_color, muzzle_color, horn_shape, created_by, created_by_email, updated_by, updated_by_email
 		) VALUES (
 		    :godhaar_id, :farmer_id, :animal_type, :gender, :breed, :age, :cost, :insurance_premium,
-		    :state, :district, :mandal, :village, :latitude, :longitude, :health_remarks,
+		    :state, :district, :mandal, :village, :tag_id, :latitude, :longitude, :health_remarks,
 		    :body_color, :muzzle_color, :horn_shape, :created_by, :created_by_email, :updated_by, :updated_by_email
-		) RETURNING id, godhaar_id, animal_type, gender, breed, age, cost, insurance_premium, state, district, mandal, village;
+		) RETURNING id, godhaar_id, animal_type, gender, breed, age, cost, insurance_premium, tag_id, state, district, mandal, village;
 	`
 
 	const insertEmbedding = `INSERT INTO embeddings (animal_id, embedding_type, sequence, faiss_id) VALUES (:animal_id, :embedding_type, :sequence, :faiss_id);`

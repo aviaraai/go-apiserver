@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"mime/multipart"
 	"net/http"
-	"strconv"
 
 	"go-api-server/internal/database/animal"
 	debugdb "go-api-server/internal/database/debug"
@@ -67,6 +66,7 @@ func toAnimalResponse(a *animal.Animal) *AnimalResponse {
 		Age:              a.Age,
 		Cost:             a.Cost,
 		InsurancePremium: a.InsurancePremium,
+		TagID:            a.TagID,
 		State:            a.State,
 		District:         a.District,
 		Mandal:           a.Mandal,
@@ -229,30 +229,19 @@ func (h *Handler) register(c echo.Context) error {
 	candidates := make([]inference.Candidate, len(nearby))
 	for i, c := range nearby {
 		faissToGodhaar[c.FaissID] = c.GodhaarID
-		if c.Cost == nil {
-			candidates[i] = inference.Candidate{
-				FaissID:     c.FaissID,
-				BodyColor:   c.BodyColor,
-				MuzzleColor: c.MuzzleColor,
-				HornShape:   c.HornShape,
-				Cost:        nil,
-			}
-		} else {
-			val := strconv.FormatInt(int64(*c.Cost), 10)
-			candidates[i] = inference.Candidate{
-				FaissID:     c.FaissID,
-				BodyColor:   c.BodyColor,
-				MuzzleColor: c.MuzzleColor,
-				HornShape:   c.HornShape,
-				Cost:        &val,
-			}
+		candidates[i] = inference.Candidate{
+			FaissID:     c.FaissID,
+			BodyColor:   c.BodyColor,
+			MuzzleColor: c.MuzzleColor,
+			HornShape:   c.HornShape,
+			TagID:       c.TagID,
 		}
 	}
 
 	// Call inference server. This is what actually detects duplicates.
 	// The response shape is validated inside the client, so reaching past this
 	// point means infResp carries three embedding ids and both colour labels.
-	infResp, err := h.Inference.Register(ctx, toInferencePayloads(frontImgs), toInferencePayloads(muzzleImgs), candidates, req.Cost)
+	infResp, err := h.Inference.Register(ctx, toInferencePayloads(frontImgs), toInferencePayloads(muzzleImgs), candidates, req.TagID)
 	if err != nil {
 		infErr := inference.Classify(err)
 		matchedGodhaarID, matchErr := duplicateGodhaarID(infErr, faissToGodhaar)
@@ -299,6 +288,7 @@ func (h *Handler) register(c echo.Context) error {
 			District:         req.District,
 			Mandal:           req.Mandal,
 			Village:          req.Village,
+			TagID:            req.TagID,
 			BodyColor:        infResp.ExtractedColors.Body.Label,
 			MuzzleColor:      infResp.ExtractedColors.Muzzle.Label,
 			HornShape:        infResp.HornShape,
@@ -392,6 +382,7 @@ func (h *Handler) search(c echo.Context) error {
 				BodyColor:   r.BodyColor,
 				MuzzleColor: r.MuzzleColor,
 				HornShape:   r.HornShape,
+				TagID:       r.TagID,
 			}
 		}
 
@@ -402,6 +393,7 @@ func (h *Handler) search(c echo.Context) error {
 			toInferencePayload(muzzleImg),
 			candidates,
 			searchTopK,
+			req.TagID,
 		)
 		if err != nil {
 			infErr := inference.Classify(err)
