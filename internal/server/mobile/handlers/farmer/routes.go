@@ -11,6 +11,7 @@ import (
 	"go-api-server/internal/storage"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 )
@@ -25,6 +26,21 @@ type Repository interface {
 type Handler struct {
 	DB      Repository
 	Storage storage.Storage
+}
+
+// optionalField normalises an optional form value. Clients send optional
+// fields as present-but-empty rather than omitting them, which binds to a
+// pointer to "" and violates the column CHECK constraints; treat blank as
+// absent so the column is stored as NULL.
+func optionalField(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	v := strings.TrimSpace(*s)
+	if v == "" {
+		return nil
+	}
+	return &v
 }
 
 func toFarmerResponse(farmer *farmer.Farmer) *FarmerResponse {
@@ -97,8 +113,8 @@ func (h *Handler) addFarmer(c echo.Context) error {
 		PublicID:       publicID,
 		Name:           req.Name,
 		Type:           req.Type,
-		Relation:       req.Relation,
-		RelationName:   req.RelationName,
+		Relation:       optionalField(req.Relation),
+		RelationName:   optionalField(req.RelationName),
 		State:          req.State,
 		District:       req.District,
 		Mandal:         req.Mandal,
