@@ -88,9 +88,9 @@ func TestDecodeErrorBodyClassification(t *testing.T) {
 }
 
 // The bodies below are copied verbatim from the inference server's own
-// serialisation (schema.py models rendered through _inference_error_handler),
-// so this is a real contract check rather than a restatement of what this
-// package already believes.
+// serialisation — schema.py's DuplicateDetail / ImageQualityDetail rendered
+// through errors.py's domain_error_handler — so this is a real contract check
+// rather than a restatement of what this package already believes.
 func TestDecodeTypedDetail(t *testing.T) {
 	t.Run("duplicate carries the matched animal", func(t *testing.T) {
 		body := `{"error_code":"DUPLICATE_ANIMAL","detail":{"matched_faiss_id":42,` +
@@ -138,14 +138,50 @@ func TestDecodeTypedDetail(t *testing.T) {
 		}
 	})
 
-	t.Run("colour inconsistency is a domain verdict", func(t *testing.T) {
-		body := `{"error_code":"BODY_COLOR_INCONSISTENT","detail":{"message":"front images disagree",` +
+	t.Run("colour inconsistency carries both slots and what each one read", func(t *testing.T) {
+		body := `{"error_code":"BODY_COLOR_INCONSISTENT","detail":{` +
+			`"message":"body_color_inconsistent: front images disagree and neither is decisive (BLACK(0.42) vs WHITE(0.39))",` +
+			`"failures":[{"slot":"front_1","stage":"color","error_code":"BODY_COLOR_INCONSISTENT","reason":"read BLACK at 0.42"},` +
+			`{"slot":"front_2","stage":"color","error_code":"BODY_COLOR_INCONSISTENT","reason":"read WHITE at 0.39"}],` +
 			`"readings":[{"slot":"front_1","label":"BLACK","confidence":0.42},` +
 			`{"slot":"front_2","label":"WHITE","confidence":0.39}]}}`
 
 		got := decodeErrorBody(422, []byte(body))
 		if got.Class != ClassDomain || got.Code != CodeBodyColorInconsistent {
-			t.Errorf("class/code = %v/%q, want domain/%s", got.Class, got.Code, CodeBodyColorInconsistent)
+			t.Fatalf("class/code = %v/%q, want domain/%s", got.Class, got.Code, CodeBodyColorInconsistent)
+		}
+		// Both photos are named because neither one alone is the defect.
+		if got.Quality == nil || len(got.Quality.Failures) != 2 {
+			t.Fatalf("per-photo failures not parsed: %+v", got.Quality)
+		}
+		// The readings are what make the verdict actionable — see ColorReading.
+		if len(got.Quality.Readings) != 2 {
+			t.Fatalf("readings not parsed: %+v", got.Quality.Readings)
+		}
+		if got.Quality.Readings[0].Label != "BLACK" || got.Quality.Readings[0].Confidence != 0.42 {
+			t.Errorf("readings[0] = %+v, want front_1/BLACK/0.42", got.Quality.Readings[0])
+		}
+		if got.Quality.Readings[1].Slot != "front_2" || got.Quality.Readings[1].Label != "WHITE" {
+			t.Errorf("readings[1] = %+v, want front_2/WHITE", got.Quality.Readings[1])
+		}
+	})
+
+	// Several animals in frame needs the opposite instruction to "no animal
+	// found", so it must survive as its own code rather than being folded in.
+	t.Run("multi cattle keeps its own code", func(t *testing.T) {
+		body := `{"error_code":"MULTI_CATTLE","detail":{"message":"muzzle_2: RECAPTURE_MULTI_CATTLE",` +
+			`"failures":[{"slot":"muzzle_2","stage":"detection","error_code":"MULTI_CATTLE",` +
+			`"reason":"RECAPTURE_MULTI_CATTLE"}],"readings":[]}}`
+
+		got := decodeErrorBody(422, []byte(body))
+		if got.Class != ClassDomain || got.Code != CodeMultiCattle {
+			t.Fatalf("class/code = %v/%q, want domain/%s", got.Class, got.Code, CodeMultiCattle)
+		}
+		if got.Quality == nil || got.Quality.Failures[0].Slot != "muzzle_2" {
+			t.Fatalf("per-photo failure not parsed: %+v", got.Quality)
+		}
+		if len(got.Quality.Readings) != 0 {
+			t.Errorf("readings should be empty for a non-colour verdict, got %+v", got.Quality.Readings)
 		}
 	})
 

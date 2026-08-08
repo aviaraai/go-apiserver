@@ -33,6 +33,10 @@ var domainResponses = map[inference.Code]userFacing{
 		http.StatusUnprocessableEntity,
 		"No animal could be found in the photos. Step back so the whole animal is in frame and take them again.",
 	},
+	inference.CodeMultiCattle: {
+		http.StatusUnprocessableEntity,
+		"Several animals are in the photo and we cannot tell which one you mean. Move closer, or turn so only this animal is in frame, and take the photos again.",
+	},
 	inference.CodeImageTooBlurry: {
 		http.StatusUnprocessableEntity,
 		"The photos are too blurry to use. Hold the camera steady, wait for it to focus, and take them again.",
@@ -61,6 +65,28 @@ var domainResponses = map[inference.Code]userFacing{
 		http.StatusUnprocessableEntity,
 		"The photos are not clear enough to use. Take them again in good light with the animal in focus.",
 	},
+}
+
+// perImageMessages is the copy for ONE photo, as opposed to the verdict on the
+// set. The two are not interchangeable: when three muzzle photos fail for three
+// different reasons the envelope's own code is the POOR_IMAGE_QUALITY umbrella,
+// whose message ("the photos are not clear enough") is true of the set and
+// useless in front of any single thumbnail. These are what let the app label
+// each rejected photo with the reason that photo was rejected.
+//
+// Kept deliberately short — they are captions, not paragraphs — and phrased in
+// the singular, which is the reason they are a separate table rather than a
+// reuse of domainResponses above.
+var perImageMessages = map[inference.Code]string{
+	inference.CodeNoAnimalDetected:        "No animal found in this photo.",
+	inference.CodeMultiCattle:             "Several animals here — frame only the one you are registering.",
+	inference.CodeImageTooBlurry:          "Too blurry. Let the camera focus before taking it.",
+	inference.CodeImageBadExposure:        "Too dark or too bright.",
+	inference.CodeImageTooSmall:           "Resolution too low.",
+	inference.CodeImageUnreadable:         "This photo could not be opened.",
+	inference.CodeBodyColorInconsistent:   "This photo's colour does not match the other one.",
+	inference.CodeMuzzleColorInconsistent: "This photo's muzzle colour does not match the others.",
+	inference.CodePoorImageQuality:        "Not clear enough to use.",
 }
 
 // Non-domain failures get a generic message. The distinction between them
@@ -177,6 +203,11 @@ func registerErrorDetails(infErr *inference.Error, matchedGodhaarID string) map[
 // searchErrorDetails carries the per-photo breakdown, so the app can mark the
 // bad images for retaking instead of making the user work out which of the five
 // was at fault. Nil when the rejection was not per-image.
+//
+// Each entry carries its own message as well as its code. The code is what the
+// app should branch on; the message is there so a build that has not yet been
+// taught a new code still has something to show under the thumbnail, which is
+// the same reason the top-level response carries one.
 func searchErrorDetails(infErr *inference.Error) map[string]any {
 	if infErr.Quality == nil || len(infErr.Quality.Failures) == 0 {
 		return nil
@@ -184,10 +215,33 @@ func searchErrorDetails(infErr *inference.Error) map[string]any {
 
 	slots := make([]map[string]any, 0, len(infErr.Quality.Failures))
 	for _, f := range infErr.Quality.Failures {
-		slots = append(slots, map[string]any{
+		entry := map[string]any{
 			"slot": f.Slot,
 			"code": string(f.ErrorCode),
-		})
+		}
+		if msg, ok := perImageMessages[f.ErrorCode]; ok {
+			entry["message"] = msg
+		}
+		slots = append(slots, entry)
 	}
-	return map[string]any{"failed_images": slots}
+
+	details := map[string]any{"failed_images": slots}
+
+	// Colour disagreements only. What each photo read is the whole explanation
+	// of the rejection — without it "these two photos disagree" is a dead end,
+	// since retaking the same two photos of the same two animals reproduces it
+	// exactly.
+	if len(infErr.Quality.Readings) > 0 {
+		readings := make([]map[string]any, 0, len(infErr.Quality.Readings))
+		for _, r := range infErr.Quality.Readings {
+			readings = append(readings, map[string]any{
+				"slot":       r.Slot,
+				"label":      r.Label,
+				"confidence": r.Confidence,
+			})
+		}
+		details["color_readings"] = readings
+	}
+
+	return details
 }

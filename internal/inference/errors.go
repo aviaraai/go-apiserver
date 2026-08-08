@@ -69,6 +69,13 @@ const (
 	CodeDuplicateAnimal  Code = "DUPLICATE_ANIMAL"
 	CodeNoAnimalDetected Code = "NO_ANIMAL_DETECTED"
 
+	// CodeMultiCattle is several animals in frame with no clear subject. It is
+	// deliberately not folded into CodeNoAnimalDetected: the two need opposite
+	// instructions, and in a goshala — where cattle stand shoulder to shoulder
+	// and this is the common failure — telling the officer to step back so the
+	// whole animal is in frame makes the next photo worse than the last.
+	CodeMultiCattle Code = "MULTI_CATTLE"
+
 	// Single-image quality failures, split by cause because each one implies
 	// different advice to whoever is holding the phone.
 	CodeImageTooBlurry   Code = "IMAGE_TOO_BLURRY"
@@ -97,6 +104,7 @@ const (
 var domainCodes = map[Code]bool{
 	CodeDuplicateAnimal:         true,
 	CodeNoAnimalDetected:        true,
+	CodeMultiCattle:             true,
 	CodeImageTooBlurry:          true,
 	CodeImageBadExposure:        true,
 	CodeImageTooSmall:           true,
@@ -128,10 +136,27 @@ type ImageFailure struct {
 	Reason    string `json:"reason"`
 }
 
-// ImageQualityDetail is the payload of any image-quality rejection.
+// ColorReading is what one photo read, on a colour-disagreement rejection.
+//
+// It is the difference between a verdict the officer can act on and one they
+// cannot. "The photos disagree" invites them to retake the same two photos;
+// "front_1 read BLACK, front_2 read WHITE" points at the likeliest cause —
+// that the two photos are of different animals.
+type ColorReading struct {
+	Slot       string  `json:"slot"`
+	Label      string  `json:"label"`
+	Confidence float64 `json:"confidence"`
+}
+
+// ImageQualityDetail is the payload of any image-quality rejection, and of the
+// two colour-disagreement rejections.
 type ImageQualityDetail struct {
 	Message  string         `json:"message"`
 	Failures []ImageFailure `json:"failures"`
+
+	// Readings is populated for the colour codes only, and is empty for every
+	// quality failure.
+	Readings []ColorReading `json:"readings"`
 }
 
 // Class sentinels, for callers that want errors.Is over the whole category
@@ -288,8 +313,13 @@ func decodeTypedDetail(e *Error, raw json.RawMessage) {
 		if err := json.Unmarshal(raw, &d); err == nil && d.MatchedFaissID != 0 {
 			e.Duplicate = &d
 		}
-	case CodeNoAnimalDetected, CodeImageTooBlurry, CodeImageBadExposure,
-		CodeImageTooSmall, CodeImageUnreadable, CodePoorImageQuality:
+	// Every remaining code carries the same per-image shape, the two colour
+	// verdicts included: they are as much "which photo do I retake" as a blur
+	// rejection is, and leaving them out of this list was why a colour
+	// disagreement reached the app with no slots attached at all.
+	case CodeNoAnimalDetected, CodeMultiCattle, CodeImageTooBlurry, CodeImageBadExposure,
+		CodeImageTooSmall, CodeImageUnreadable, CodePoorImageQuality,
+		CodeBodyColorInconsistent, CodeMuzzleColorInconsistent:
 		var q ImageQualityDetail
 		if err := json.Unmarshal(raw, &q); err == nil && len(q.Failures) > 0 {
 			e.Quality = &q
