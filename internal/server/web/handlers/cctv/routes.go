@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 
 	"go-api-server/internal/cctv"
@@ -18,6 +19,7 @@ import (
 	"go-api-server/internal/storage"
 
 	"github.com/labstack/echo/v4"
+	echoMiddleware "github.com/labstack/echo/v4/middleware"
 )
 
 type Repository interface {
@@ -40,6 +42,11 @@ func RegisterRoutes(g *echo.Group, h *Handler) {
 	cctvGroup := g.Group("/cctv", middleware.RequireRole("admin"))
 	cctvGroup.GET("/goshalas", h.listGoshalas)
 	cctvGroup.POST("/analyse", h.analyse)
+	// The body limit is applied to this route alone. It is the only endpoint in
+	// the service that accepts a video, and a cap low enough to be sane for JSON
+	// would make it useless.
+	cctvGroup.POST("/analyse/upload", h.analyseUpload,
+		echoMiddleware.BodyLimit(strconv.FormatInt(maxUploadBytes, 10)))
 	cctvGroup.GET("/requests", h.listRequests)
 }
 
@@ -86,22 +93,39 @@ func (h *Handler) listGoshalas(c echo.Context) error {
 // practical consequence is that a long clip can outlast a proxy's idle timeout —
 // see the frontend contract for the timeout the dashboard must set.
 func (h *Handler) analyse(c echo.Context) error {
-	ctx := c.Request().Context()
-
 	var req AnalyseRequest
 	if err := c.Bind(&req); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, httperr.Response{
 			Message: "Invalid request body.",
 		}).SetInternal(err)
 	}
-	if strings.TrimSpace(req.GoshalaPublicID) == "" {
+
+	return h.startAnalysis(c, req.GoshalaPublicID, func(ctx context.Context, goshalaPublicID string) (*cctv.Video, error) {
+		return h.Source.FetchLatest(ctx, goshalaPublicID)
+	})
+}
+
+// videoFetcher supplies the clip for one run. It is a parameter rather than
+// always h.Source because a video now arrives one of two ways — pulled from the
+// camera, or uploaded by the admin — and everything after the fetch (storage,
+// inference, the request record, the failure classification) is identical.
+// Whoever calls it owns the returned Body and always closes it.
+type videoFetcher func(ctx context.Context, goshalaPublicID string) (*cctv.Video, error)
+
+// startAnalysis resolves the goshala, opens the request record and runs the
+// pipeline. Both entry points share it so an uploaded clip lands in the same
+// history, with the same statuses, as one pulled from a camera.
+func (h *Handler) startAnalysis(c echo.Context, goshalaPublicID string, fetch videoFetcher) error {
+	ctx := c.Request().Context()
+
+	if strings.TrimSpace(goshalaPublicID) == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, httperr.Response{
 			Message: "Select a goshala to analyse.",
 			Code:    "GOSHALA_REQUIRED",
 		})
 	}
 
-	goshala, err := h.DB.GoshalaByPublicID(ctx, req.GoshalaPublicID)
+	goshala, err := h.DB.GoshalaByPublicID(ctx, goshalaPublicID)
 	if err != nil {
 		if errors.Is(err, cctvdb.ErrGoshalaNotFound) {
 			return echo.NewHTTPError(http.StatusNotFound, httperr.Response{
@@ -127,7 +151,7 @@ func (h *Handler) analyse(c echo.Context) error {
 		}).SetInternal(err)
 	}
 
-	result, err := h.runAnalysis(ctx, requestID, goshala)
+	result, err := h.runAnalysis(ctx, requestID, goshala, fetch)
 	if err != nil {
 		return err
 	}
@@ -137,10 +161,15 @@ func (h *Handler) analyse(c echo.Context) error {
 // runAnalysis carries out the work and closes the request record either way.
 // Every exit path writes a terminal status, so a row is never left running
 // except when the process itself dies.
-func (h *Handler) runAnalysis(ctx context.Context, requestID int64, goshala *cctvdb.Goshala) (*AnalysisResponse, error) {
+func (h *Handler) runAnalysis(ctx context.Context, requestID int64, goshala *cctvdb.Goshala, fetch videoFetcher) (*AnalysisResponse, error) {
 	state := &analysisState{requestID: requestID, goshala: goshala}
 
-	if err := h.fetchAndStoreSource(ctx, state); err != nil {
+	if err := h.fetchAndStoreSource(ctx, state, fetch); err != nil {
+		// A spool that failed part-way still left a temp file behind, and these
+		// are large enough that leaking one per failed run matters.
+		if state.sourcePath != "" {
+			os.Remove(state.sourcePath)
+		}
 		return nil, h.failRequest(ctx, state, err)
 	}
 	defer os.Remove(state.sourcePath)
@@ -193,19 +222,24 @@ type analysisState struct {
 	cleanupErr error
 }
 
-// fetchAndStoreSource pulls the clip from the camera and keeps a copy.
+// fetchAndStoreSource obtains the clip — from the camera or from the admin's
+// upload, depending on the fetcher — and keeps a copy.
 //
 // The clip is spooled to a temp file rather than held in memory: these are
 // multi-minute videos, and it has to be read twice — once to upload as the
 // source of record, once to send to the model.
-func (h *Handler) fetchAndStoreSource(ctx context.Context, s *analysisState) error {
-	video, err := h.Source.FetchLatest(ctx, s.goshala.PublicID)
+func (h *Handler) fetchAndStoreSource(ctx context.Context, s *analysisState, fetch videoFetcher) error {
+	video, err := fetch(ctx, s.goshala.PublicID)
 	if err != nil {
 		return err
 	}
 	defer video.Body.Close()
 
-	tmp, err := os.CreateTemp("", fmt.Sprintf("cctv-%d-*.mp4", s.requestID))
+	// The temp file keeps the source's own extension: it is what the inference
+	// server is told the file is called, and an uploaded .mov announced as .mp4
+	// would be a lie told to a decoder.
+	ext := videoExtension(video.Filename)
+	tmp, err := os.CreateTemp("", fmt.Sprintf("cctv-%d-*%s", s.requestID, ext))
 	if err != nil {
 		return fmt.Errorf("create temp video file: %w", err)
 	}
@@ -223,7 +257,7 @@ func (h *Handler) fetchAndStoreSource(ctx context.Context, s *analysisState) err
 	if contentType == "" {
 		contentType = "video/mp4"
 	}
-	s.sourceKey = fmt.Sprintf("cctv/%d/source%s", s.requestID, videoExtension(video.Filename))
+	s.sourceKey = fmt.Sprintf("cctv/%d/source%s", s.requestID, ext)
 
 	src, err := os.Open(s.sourcePath)
 	if err != nil {

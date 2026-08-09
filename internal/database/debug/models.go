@@ -203,3 +203,33 @@ type AnimalImage struct {
 	Sequence  int    `db:"sequence"`
 	ImageKey  string `db:"image_key"`
 }
+
+// Slot sets for MatchedAnimalImages. Both exclude the certificates, which play
+// no part in identification.
+var (
+	// SearchSlots are the four slots a search compares against.
+	SearchSlots = []string{"front", "muzzle", "left", "right"}
+
+	// DuplicateSlots are the slots a registration duplicate is decided on. The
+	// side photos are stored but never embedded, so putting them next to a
+	// rejected registration would invite a reviewer to weigh evidence the model
+	// never saw.
+	DuplicateSlots = []string{"front", "muzzle"}
+)
+
+// DetailKeyMatchedGodhaarID is where a registration failure records the animal
+// a duplicate rejection resolved to. It lives in the detail payload rather than
+// in a column because only one error code ever sets it — see
+// captureRegistrationFailure.
+const DetailKeyMatchedGodhaarID = "matched_godhaar_id"
+
+// MatchedGodhaarID reads the resolved duplicate out of a detail payload. Absent
+// for every error code except DUPLICATE_ANIMAL, and absent even there when the
+// matched FAISS id could not be mapped back to an animal.
+func MatchedGodhaarID(detail JSONMap) *string {
+	godhaarID, ok := detail[DetailKeyMatchedGodhaarID].(string)
+	if !ok || godhaarID == "" {
+		return nil
+	}
+	return &godhaarID
+}

@@ -15,6 +15,7 @@ type Animal struct {
 	District         string   `db:"district"`
 	Mandal           string   `db:"mandal"`
 	Village          string   `db:"village"`
+	HealthRemarks    *string  `db:"health_remarks"`
 	ImageKey         string   `db:"image_key"`
 }
 

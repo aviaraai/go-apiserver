@@ -4,6 +4,7 @@ type AnalyticsRequest struct {
 	State    *string `query:"state"`
 	District *string `query:"district"`
 	Mandal   *string `query:"mandal"`
+	Breed    *string `query:"breed"`
 	FromStr  *string `query:"from_date"`
 	ToStr    *string `query:"to_date"`
 }

@@ -132,15 +132,20 @@ func (r *Repository) SearchByID(ctx context.Context, searchID string) (*SearchRe
 	return &row, nil
 }
 
-// MatchedAnimalImages returns the identifying photos of the animal a search
-// matched — the four slots the model compares against, never the certificates.
+// MatchedAnimalImages returns the stored photos of the animal a record matched,
+// restricted to the given slots — never the certificates.
+//
+// The caller chooses the slots because the two debug paths were decided on
+// different evidence: a search compares all four identifying slots, while a
+// registration duplicate is settled on front and muzzle alone. See SearchSlots
+// and DuplicateSlots.
 //
 // found is false when the godhaar_id no longer resolves. That is a real state
-// worth reporting rather than an error: the search record stands as evidence of
-// what the model said even after the animal it named has been deleted. An
-// animal that exists but has no images returns found with an empty slice, which
-// is why existence is checked separately from the image rows.
-func (r *Repository) MatchedAnimalImages(ctx context.Context, godhaarID string) ([]AnimalImage, bool, error) {
+// worth reporting rather than an error: the record stands as evidence of what
+// the model said even after the animal it named has been deleted. An animal
+// that exists but has no images returns found with an empty slice, which is why
+// existence is checked separately from the image rows.
+func (r *Repository) MatchedAnimalImages(ctx context.Context, godhaarID string, slots []string) ([]AnimalImage, bool, error) {
 	var animalID int64
 	err := r.db.GetContext(ctx, &animalID,
 		`SELECT id FROM animals WHERE godhaar_id = $1;`, godhaarID)
@@ -150,15 +155,23 @@ func (r *Repository) MatchedAnimalImages(ctx context.Context, godhaarID string) 
 	if err != nil {
 		return nil, false, fmt.Errorf("look up matched animal %s: %w", godhaarID, err)
 	}
+	if len(slots) == 0 {
+		return []AnimalImage{}, true, nil
+	}
 
-	const query = `
+	// sqlx.In expands the slot list into one placeholder each; Rebind then turns
+	// the ? placeholders it emits into the $N form Postgres wants.
+	query, args, err := sqlx.In(`
 		SELECT image_type, sequence, image_key
 		FROM images
-		WHERE animal_id = $1 AND image_type IN ('front', 'muzzle', 'left', 'right')
-		ORDER BY image_type, sequence;`
+		WHERE animal_id = ? AND image_type IN (?)
+		ORDER BY image_type, sequence;`, animalID, slots)
+	if err != nil {
+		return nil, false, fmt.Errorf("build image query for matched animal %s: %w", godhaarID, err)
+	}
 
 	var images []AnimalImage
-	if err := r.db.SelectContext(ctx, &images, query, animalID); err != nil {
+	if err := r.db.SelectContext(ctx, &images, r.db.Rebind(query), args...); err != nil {
 		return nil, false, fmt.Errorf("list images for matched animal %s: %w", godhaarID, err)
 	}
 	return images, true, nil

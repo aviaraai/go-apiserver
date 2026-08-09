@@ -49,7 +49,7 @@ func (r *Repository) UserAnalytics(ctx context.Context, userID string) (*UserAna
 	return &analytics, nil
 }
 
-func (r *Repository) AdminAnalytics(ctx context.Context, state, district, mandal *string, fromDate, toDate *time.Time) ([]AdminAnalytics, error) {
+func (r *Repository) AdminAnalytics(ctx context.Context, state, district, mandal, breed *string, fromDate, toDate *time.Time) ([]AdminAnalytics, error) {
 	const query = `
 		SELECT
 	    COALESCE(f.created_by_email, a.created_by_email) AS user_email,
@@ -67,8 +67,8 @@ func (r *Repository) AdminAnalytics(ctx context.Context, state, district, mandal
 	            ($1::text IS NULL OR state = $1)
 	            AND ($2::text IS NULL OR district = $2)
 	            AND ($3::text IS NULL OR mandal = $3)
-	            AND ($4::timestamptz IS NULL OR created_at >= $4)
-	            AND ($5::timestamptz IS NULL OR created_at <  $5)
+	            AND ($5::timestamptz IS NULL OR created_at >= $5)
+	            AND ($6::timestamptz IS NULL OR created_at <  $6)
 	        GROUP BY created_by_email
 	    ) AS f
 		FULL OUTER JOIN
@@ -83,8 +83,9 @@ func (r *Repository) AdminAnalytics(ctx context.Context, state, district, mandal
 	            ($1::text IS NULL OR state = $1)
 	            AND ($2::text IS NULL OR district = $2)
 	            AND ($3::text IS NULL OR mandal = $3)
-	            AND ($4::timestamptz IS NULL OR created_at >= $4)
-	            AND ($5::timestamptz IS NULL OR created_at <  $5)
+				AND ($4::text IS NULL OR breed = $4)
+	            AND ($5::timestamptz IS NULL OR created_at >= $5)
+	            AND ($6::timestamptz IS NULL OR created_at <  $6)
 	        GROUP BY created_by_email
 	    ) AS a
 	    ON f.created_by_email = a.created_by_email
@@ -92,7 +93,7 @@ func (r *Repository) AdminAnalytics(ctx context.Context, state, district, mandal
 	`
 
 	var analytics []AdminAnalytics
-	if err := r.db.SelectContext(ctx, &analytics, query, state, district, mandal, fromDate, toDate); err != nil {
+	if err := r.db.SelectContext(ctx, &analytics, query, state, district, mandal, breed, fromDate, toDate); err != nil {
 		return nil, fmt.Errorf("admin analytics: %w", err)
 	}
 	return analytics, nil

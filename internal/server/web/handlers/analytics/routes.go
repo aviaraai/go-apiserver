@@ -11,7 +11,7 @@ import (
 )
 
 type Repository interface {
-	AdminAnalytics(context.Context, *string, *string, *string, *time.Time, *time.Time) ([]analytics.AdminAnalytics, error)
+	AdminAnalytics(context.Context, *string, *string, *string, *string, *time.Time, *time.Time) ([]analytics.AdminAnalytics, error)
 	AdminTotalAnalytics(context.Context) (*analytics.AdminTotalAnalytics, error)
 	LegacyAnalytics(context.Context, *string, *string, *string) ([]analytics.LegacyAnalytics, error)
 }
@@ -73,7 +73,7 @@ func (h *Handler) analytics(c echo.Context) error {
 		to = &t
 	}
 
-	adminAnalytics, err := h.DB.AdminAnalytics(ctx, req.State, req.District, req.Mandal, from, to)
+	adminAnalytics, err := h.DB.AdminAnalytics(ctx, req.State, req.District, req.Mandal, req.Breed, from, to)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fetch admin analytics").SetInternal(err)
 	}

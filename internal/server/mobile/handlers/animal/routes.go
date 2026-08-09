@@ -25,6 +25,7 @@ type Repository interface {
 	FarmerIDByPublicID(context.Context, string) (*int64, error)
 	FindFAISSCandidates(context.Context, float64, float64, float64) ([]animal.CandidateRow, error)
 	CreateAnimalWithEmbeddingsAndImages(context.Context, animal.CreateAnimalTx) (*animal.Animal, error)
+	GetAnimalByTagID(context.Context, string) (*animal.Animal, error)
 }
 
 // DebugRepository is the developer-facing record of what the model did. It is a
@@ -71,6 +72,7 @@ func toAnimalResponse(a *animal.Animal) *AnimalResponse {
 		District:         a.District,
 		Mandal:           a.Mandal,
 		Village:          a.Village,
+		HealthRemarks:    a.HealthRemarks,
 	}
 }
 
@@ -80,6 +82,7 @@ func RegisterRoutes(g *echo.Group, h *Handler) {
 	animalGroup.GET("/:godhaar_id", h.getAnimal)
 	animalGroup.POST("/register", h.register, middleware.UserLockMiddleware, middleware.DeviceInfoMiddleware())
 	animalGroup.POST("/search", h.search, middleware.DeviceInfoMiddleware())
+	animalGroup.GET("/search/:tag_id", h.searchByTagID)
 }
 
 // Farmer all cattle and check same user
@@ -382,7 +385,6 @@ func (h *Handler) search(c echo.Context) error {
 				BodyColor:   r.BodyColor,
 				MuzzleColor: r.MuzzleColor,
 				HornShape:   r.HornShape,
-				TagID:       r.TagID,
 			}
 		}
 
@@ -393,7 +395,6 @@ func (h *Handler) search(c echo.Context) error {
 			toInferencePayload(muzzleImg),
 			candidates,
 			searchTopK,
-			req.TagID,
 		)
 		if err != nil {
 			infErr := inference.Classify(err)
@@ -476,4 +477,23 @@ func responseGodhaarID(v verdict) *string {
 		return nil
 	}
 	return v.GodhaarID
+}
+
+func (h *Handler) searchByTagID(c echo.Context) error {
+	ctx := c.Request().Context()
+
+	var req SearchAnimalByTagIDRequest
+	if err := c.Bind(&req); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "missing tag id")
+	}
+
+	f, err := h.DB.GetAnimalByTagID(ctx, req.TagID)
+	if err != nil {
+		if errors.Is(err, animal.ErrRowNotFound) {
+			return echo.NewHTTPError(http.StatusBadRequest, "animal not found")
+		}
+		return echo.NewHTTPError(http.StatusInternalServerError, "internal error").SetInternal(err)
+	}
+
+	return c.JSON(http.StatusOK, toAnimalResponse(f))
 }

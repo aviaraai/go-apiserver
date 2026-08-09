@@ -18,7 +18,7 @@ func NewRepository(db *sqlx.DB) *Repository {
 }
 
 func (r *Repository) AnimalsByFarmerID(ctx context.Context, farmerID string) ([]Animal, error) {
-	const query = `SELECT a.id, a.godhaar_id, a.animal_type, a.gender, a.breed, a.age, a.cost, a.insurance_premium, a.state, a.district, a.mandal, a.village, i.image_key FROM farmers AS f join animals AS a ON f.id = a.farmer_id JOIN images AS i ON a.id=i.animal_id WHERE f.public_id=$1 AND i.image_type='front' AND i.sequence=1;`
+	const query = `SELECT a.id, a.godhaar_id, a.animal_type, a.gender, a.breed, a.age, a.cost, a.insurance_premium, a.tag_id, a.state, a.district, a.mandal, a.village, i.image_key FROM farmers AS f join animals AS a ON f.id = a.farmer_id JOIN images AS i ON a.id=i.animal_id WHERE f.public_id=$1 AND i.image_type='front' AND i.sequence=1;`
 
 	var animals []Animal
 	if err := r.db.SelectContext(ctx, &animals, query, farmerID); err != nil {
@@ -28,7 +28,7 @@ func (r *Repository) AnimalsByFarmerID(ctx context.Context, farmerID string) ([]
 }
 
 func (r *Repository) UnassignedAnimalsByUser(ctx context.Context, userID string) ([]Animal, error) {
-	const query = `SELECT a.id, a.godhaar_id, a.animal_type, a.gender, a.breed, a.age, a.cost, a.insurance_premium, a.state, a.district, a.mandal, a.village, i.image_key FROM animals AS a JOIN images AS i ON a.id=i.animal_id WHERE a.created_by=$1 AND a.farmer_id IS NULL AND i.image_type='front' AND i.sequence=1;`
+	const query = `SELECT a.id, a.godhaar_id, a.animal_type, a.gender, a.breed, a.age, a.cost, a.insurance_premium, a.tag_id, a.state, a.district, a.mandal, a.village, i.image_key FROM animals AS a JOIN images AS i ON a.id=i.animal_id WHERE a.created_by=$1 AND a.farmer_id IS NULL AND i.image_type='front' AND i.sequence=1;`
 
 	var animals []Animal
 	if err := r.db.SelectContext(ctx, &animals, query, userID); err != nil {
@@ -38,10 +38,23 @@ func (r *Repository) UnassignedAnimalsByUser(ctx context.Context, userID string)
 }
 
 func (r *Repository) GetAnimal(ctx context.Context, godhaarID string) (*Animal, error) {
-	const query = `SELECT f.public_id, a.godhaar_id, a.animal_type, a.gender, a.breed, a.age, a.cost, a.insurance_premium, a.tag_id, a.state, a.district, a.mandal, a.village FROM animals AS a LEFT JOIN farmers AS f ON f.id=a.farmer_id WHERE godhaar_id=$1;`
+	const query = `SELECT f.public_id, a.godhaar_id, a.animal_type, a.gender, a.breed, a.age, a.cost, a.insurance_premium, a.tag_id, a.state, a.district, a.mandal, a.village, a.health_remarks FROM animals AS a LEFT JOIN farmers AS f ON f.id=a.farmer_id WHERE godhaar_id=$1;`
 
 	var animal Animal
 	if err := r.db.GetContext(ctx, &animal, query, godhaarID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrRowNotFound
+		}
+		return nil, fmt.Errorf("get farmer: %w", err)
+	}
+	return &animal, nil
+}
+
+func (r *Repository) GetAnimalByTagID(ctx context.Context, tagID string) (*Animal, error) {
+	const query = `SELECT f.public_id, a.godhaar_id, a.animal_type, a.gender, a.breed, a.age, a.cost, a.insurance_premium, a.tag_id, a.state, a.district, a.mandal, a.village, a.health_remarks FROM animals AS a LEFT JOIN farmers AS f ON f.id=a.farmer_id WHERE tag_id=$1;`
+
+	var animal Animal
+	if err := r.db.GetContext(ctx, &animal, query, tagID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrRowNotFound
 		}

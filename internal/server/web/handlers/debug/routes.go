@@ -22,7 +22,7 @@ type Repository interface {
 	RegistrationFailureByID(context.Context, string) (*debugdb.RegistrationFailureRow, error)
 	ListSearches(context.Context) ([]debugdb.SearchRecordListRow, error)
 	SearchByID(context.Context, string) (*debugdb.SearchRecordRow, error)
-	MatchedAnimalImages(context.Context, string) ([]debugdb.AnimalImage, bool, error)
+	MatchedAnimalImages(context.Context, string, []string) ([]debugdb.AnimalImage, bool, error)
 	UpdateSearchVerification(context.Context, string, string) (*debugdb.SearchRecordRow, error)
 }
 
@@ -92,10 +92,19 @@ func (h *Handler) getRegistrationFailure(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to sign image urls").SetInternal(err)
 	}
 
+	// A duplicate rejection is only reviewable next to the animal it was
+	// rejected in favour of: the id alone tells a reader which record to go and
+	// look up, which is the work this saves them.
+	matched, err := h.matchedAnimal(ctx, debugdb.MatchedGodhaarID(row.Detail), debugdb.DuplicateSlots)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to load matched animal").SetInternal(err)
+	}
+
 	return c.JSON(http.StatusOK, RegistrationFailureDetailResponse{
 		RegistrationID: row.RegistrationID,
 		ErrorCode:      row.ErrorCode,
 		Images:         images,
+		Matched:        matched,
 		Detail:         row.Detail,
 		Device:         toDeviceResponse(row.DeviceColumns),
 		CreatedByEmail: row.CreatedByEmail,
@@ -196,7 +205,7 @@ func (h *Handler) respondWithSearchDetail(c echo.Context, row *debugdb.SearchRec
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to sign image urls").SetInternal(err)
 	}
-	matched, err := h.matchedAnimal(ctx, row.GodhaarID)
+	matched, err := h.matchedAnimal(ctx, row.GodhaarID, debugdb.SearchSlots)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to load matched animal").SetInternal(err)
 	}
@@ -216,17 +225,22 @@ func (h *Handler) respondWithSearchDetail(c echo.Context, row *debugdb.SearchRec
 	})
 }
 
-// matchedAnimal resolves the animal a search named, if it named one.
-func (h *Handler) matchedAnimal(ctx context.Context, godhaarID *string) (*MatchedAnimalResponse, error) {
+// matchedAnimal resolves the animal a record named, if it named one, and signs
+// the given slots of its photos.
+//
+// Signing is serial here where the listings sign concurrently: a match is at
+// most a handful of photos, against a listing's one per row over the whole
+// table.
+func (h *Handler) matchedAnimal(ctx context.Context, godhaarID *string, slots []string) (*MatchedAnimalResponse, error) {
 	if godhaarID == nil {
 		return nil, nil
 	}
 
-	stored, found, err := h.DB.MatchedAnimalImages(ctx, *godhaarID)
+	stored, found, err := h.DB.MatchedAnimalImages(ctx, *godhaarID, slots)
 	if err != nil {
 		return nil, err
 	}
-	// The animal this search pointed at is gone. The record still stands as
+	// The animal this record pointed at is gone. The record still stands as
 	// evidence of what the model said, so the id is reported without it.
 	if !found {
 		return &MatchedAnimalResponse{

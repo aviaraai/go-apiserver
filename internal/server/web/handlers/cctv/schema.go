@@ -15,7 +15,7 @@ type GoshalaResponse struct {
 }
 
 type AnalyseRequest struct {
-	GoshalaPublicID string `json:"goshala_public_id"`
+	GoshalaPublicID string `form:"goshala_public_id"`
 }
 
 // AnalysisResponse is one completed analysis.

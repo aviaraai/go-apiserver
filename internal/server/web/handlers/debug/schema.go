@@ -24,6 +24,29 @@ type ImageResponse struct {
 	URL      string `json:"url"`
 }
 
+// MatchedAnimalResponse is the already-registered animal a record resolved to:
+// the one a search landed on, or the one a registration was rejected as a
+// duplicate of.
+//
+// It carries the identity and the photos and nothing else. Breed, age, owner
+// and location say nothing about whether the model was right — the photos next
+// to the submitted ones are what settles that, and they are the whole reason
+// this object exists.
+//
+// Which slots arrive depends on the record: a search shows front, muzzle, left
+// and right, a duplicate registration shows front and muzzle, because those are
+// what each decision was actually made on. Read Slot rather than assuming a
+// count. Every URL is presigned for direct download.
+type MatchedAnimalResponse struct {
+	GodhaarID string          `json:"godhaar_id"`
+	Images    []ImageResponse `json:"images"`
+
+	// Deleted marks a record whose godhaar_id no longer resolves, so the
+	// dashboard can show the id without implying the animal is still there.
+	// Images is empty in that case.
+	Deleted bool `json:"deleted"`
+}
+
 // ── Registration failures ────────────────────────────────────────────────────
 
 // RegistrationFailureListItem is one card in the listing.
@@ -48,15 +71,27 @@ type RegistrationFailureListItem struct {
 }
 
 // RegistrationFailureDetailResponse is one failure in full: every photo the
-// model was given, and the raw verdict payload behind the code.
+// model was given, the animal it was rejected in favour of, and the raw verdict
+// payload behind the code.
 type RegistrationFailureDetailResponse struct {
-	RegistrationID string          `json:"registration_id"`
-	ErrorCode      string          `json:"error_code"`
-	Images         []ImageResponse `json:"images"`
-	Detail         map[string]any  `json:"detail"`
-	Device         DeviceResponse  `json:"device"`
-	CreatedByEmail *string         `json:"created_by_email"`
-	CreatedAt      time.Time       `json:"created_at"`
+	RegistrationID string `json:"registration_id"`
+	ErrorCode      string `json:"error_code"`
+
+	// Images are the photos the registrant submitted, all of them: two front
+	// and three muzzle, whatever the model was actually shown.
+	Images []ImageResponse `json:"images"`
+
+	// Matched is the already-registered animal a DUPLICATE_ANIMAL rejection
+	// pointed at, with its own front and muzzle photos, so the two sets can be
+	// put side by side. Null for every other error code — nothing else is a
+	// claim about which animal this is — and null on a duplicate whose matched
+	// FAISS id could not be resolved back to an animal.
+	Matched *MatchedAnimalResponse `json:"matched_animal"`
+
+	Detail         map[string]any `json:"detail"`
+	Device         DeviceResponse `json:"device"`
+	CreatedByEmail *string        `json:"created_by_email"`
+	CreatedAt      time.Time      `json:"created_at"`
 }
 
 // ── Searches ─────────────────────────────────────────────────────────────────
@@ -99,22 +134,6 @@ type SearchListItem struct {
 	Device         DeviceResponse `json:"device"`
 	CreatedByEmail *string        `json:"created_by_email"`
 	CreatedAt      time.Time      `json:"created_at"`
-}
-
-// MatchedAnimalResponse is the animal a search resolved to.
-//
-// It carries the identity and the photos and nothing else. Breed, age, owner
-// and location say nothing about whether the model was right — the photos next
-// to the searched ones are what settles that, and they are the whole reason
-// this object exists.
-type MatchedAnimalResponse struct {
-	GodhaarID string          `json:"godhaar_id"`
-	Images    []ImageResponse `json:"images"`
-
-	// Deleted marks a search whose godhaar_id no longer resolves, so the
-	// dashboard can show the id without implying the animal is still there.
-	// Images is empty in that case.
-	Deleted bool `json:"deleted"`
 }
 
 // SearchDetailResponse is one search in full: the photos that were searched,

@@ -46,7 +46,7 @@ func (h *Handler) captureRegistrationFailure(c echo.Context, infErr *inference.E
 	// to work out that mapping — and it cannot be recovered later, since it
 	// depends on which candidates were nearby at the time.
 	if matchedGodhaarID != "" {
-		detail["matched_godhaar_id"] = matchedGodhaarID
+		detail[debugdb.DetailKeyMatchedGodhaarID] = matchedGodhaarID
 	}
 
 	record := debugdb.CreateRegistrationFailure{

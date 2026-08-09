@@ -30,7 +30,7 @@ func (r *Repository) AnimalIDByGodhaarID(ctx context.Context, godhaarID string) 
 }
 
 func (r *Repository) ImagesByAnimalID(ctx context.Context, animalID int64) ([]ImageRow, error) {
-	const query = `SELECT image_type, image_key FROM images WHERE animal_id=$1 AND image_type='front' AND sequence=1;`
+	const query = `SELECT image_type, image_key FROM images WHERE animal_id=$1 AND image_type IN ('muzzle', 'front') AND sequence IN (1, 2, 3);`
 	var images []ImageRow
 	if err := r.db.SelectContext(ctx, &images, query, animalID); err != nil {
 		return nil, fmt.Errorf("get images for godhaar id %d: %w", animalID, err)
