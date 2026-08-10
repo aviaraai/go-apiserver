@@ -19,7 +19,7 @@ type Candidate struct {
 	BodyColor   string  `json:"body_color"`
 	MuzzleColor string  `json:"muzzle_color"`
 	HornShape   *string `json:"horn_shape"`
-	TagID       *string `json:"tag_id"`
+	TagID       *string `json:"tag_no"`
 }
 
 type ImagePayload struct {
@@ -70,7 +70,7 @@ const registerEmbeddingCount = 3
 
 type Client interface {
 	Register(ctx context.Context, front, muzzle []ImagePayload, candidates []Candidate, tagID *string) (*RegisterResponse, error)
-	Search(ctx context.Context, front, muzzle ImagePayload, candidateIDs []Candidate, topK int) (*SearchResponse, error)
+	Search(ctx context.Context, front, muzzle ImagePayload, candidateIDs []Candidate, topK int, tagID *string) (*SearchResponse, error)
 }
 
 type HTTPClient struct {
@@ -108,8 +108,8 @@ func (c *HTTPClient) Register(ctx context.Context, front, muzzle []ImagePayload,
 	return &out, nil
 }
 
-func (c *HTTPClient) Search(ctx context.Context, front, muzzle ImagePayload, candidates []Candidate, topK int) (*SearchResponse, error) {
-	body, contentType, err := buildSearchBody(front, muzzle, candidates, topK)
+func (c *HTTPClient) Search(ctx context.Context, front, muzzle ImagePayload, candidates []Candidate, topK int, tagID *string) (*SearchResponse, error) {
+	body, contentType, err := buildSearchBody(front, muzzle, candidates, topK, tagID)
 	if err != nil {
 		return nil, transportError(CodeUnavailable, 0, err)
 	}
@@ -234,12 +234,18 @@ func buildRegisterBody(front, muzzle []ImagePayload, candidates []Candidate, tag
 	return body, writer.FormDataContentType(), nil
 }
 
-func buildSearchBody(front, muzzle ImagePayload, candidates []Candidate, topK int) (*bytes.Buffer, string, error) {
+func buildSearchBody(front, muzzle ImagePayload, candidates []Candidate, topK int, tagID *string) (*bytes.Buffer, string, error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
 	if err := writeCandidates(writer, candidates); err != nil {
 		return nil, "", err
+	}
+
+	if tagID != nil {
+		if err := writer.WriteField("tag_no", *tagID); err != nil {
+			return nil, "", err
+		}
 	}
 
 	// Field names here must match the inference /search signature exactly:

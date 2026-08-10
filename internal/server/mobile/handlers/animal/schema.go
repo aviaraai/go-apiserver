@@ -33,6 +33,7 @@ type SearchAnimalByTagIDRequest struct {
 type SearchAnimalRequest struct {
 	Latitude  float64 `form:"latitude"`
 	Longitude float64 `form:"longitude"`
+	TagID     *string `form:"tag_id"`
 }
 
 type AnimalResponse struct {

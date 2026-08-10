@@ -385,6 +385,7 @@ func (h *Handler) search(c echo.Context) error {
 				BodyColor:   r.BodyColor,
 				MuzzleColor: r.MuzzleColor,
 				HornShape:   r.HornShape,
+				TagID:       r.TagID,
 			}
 		}
 
@@ -395,6 +396,7 @@ func (h *Handler) search(c echo.Context) error {
 			toInferencePayload(muzzleImg),
 			candidates,
 			searchTopK,
+			req.TagID,
 		)
 		if err != nil {
 			infErr := inference.Classify(err)
