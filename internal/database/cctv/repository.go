@@ -91,7 +91,7 @@ func (r *Repository) CompleteRequest(ctx context.Context, p CompleteRequest) err
 		    annotated_video_key = :annotated_video_key,
 		    total_animals = :total_animals,
 		    total_clear_animals = :total_clear_animals,
-		    detail = :detail::jsonb,
+		    detail = :detail,
 		    completed_at = now()
 		WHERE id = :id AND status = 'running';`
 
@@ -105,7 +105,7 @@ func (r *Repository) FailRequest(ctx context.Context, p FailRequest) error {
 		    inference_job_id = :inference_job_id,
 		    source_video_key = :source_video_key,
 		    error_code = :error_code,
-		    detail = :detail::jsonb,
+		    detail = :detail,
 		    completed_at = now()
 		WHERE id = :id AND status = 'running';`
 

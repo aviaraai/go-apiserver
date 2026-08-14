@@ -70,7 +70,14 @@ func (s *Server) RegisterRoutes() (http.Handler, error) {
 
 	// The camera integration is not written yet. Everything downstream of the
 	// fetch works; swapping this for a real Source is the only step left.
-	var cctvSource cctv.Source = cctv.NaiveImplementationSource{}
+	//
+	// NotImplementedSource, not NaiveImplementationSource: the dashboard
+	// already has real, tested handling for a clean 503 CCTV_SOURCE_UNAVAILABLE
+	// ("camera not reachable right now", retryable) — that is the honest state
+	// today, not a fixed local test file standing in as every goshala's camera.
+	// Swap this back to NaiveImplementationSource only for local pipeline
+	// testing, never for anything the dashboard actually talks to.
+	var cctvSource cctv.Source = cctv.NotImplementedSource{}
 
 	dbHandle := s.db.DB()
 

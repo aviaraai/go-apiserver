@@ -19,6 +19,13 @@ const (
 	codeSourceUnavailable = "CCTV_SOURCE_UNAVAILABLE"
 	codeStorageFailed     = "CCTV_STORAGE_FAILED"
 	codeResultNotSaved    = "CCTV_RESULT_NOT_SAVED"
+
+	// Upload rejections. These are the admin's to fix, so each names the
+	// problem specifically enough for the dashboard to say what to do.
+	codeVideoRequired          = "CCTV_VIDEO_REQUIRED"
+	codeVideoTooLarge          = "CCTV_VIDEO_TOO_LARGE"
+	codeVideoUnsupportedFormat = "CCTV_VIDEO_UNSUPPORTED_FORMAT"
+	codeVideoUnreadable        = "CCTV_VIDEO_UNREADABLE"
 )
 
 // ErrResultNotSaved marks an analysis that ran to completion but whose result
@@ -29,6 +36,12 @@ const (
 // video or the model, and the annotated clip is sitting in storage — only the
 // record of it is missing.
 var ErrResultNotSaved = errors.New("analysis completed but the result could not be saved")
+
+// ErrUploadUnreadable marks an uploaded clip that could not be opened for
+// reading — a truncated transfer, or a spool file that went missing under us.
+// It surfaces only after the request record exists, which is why it is an error
+// classified here rather than a rejection returned straight from the handler.
+var ErrUploadUnreadable = errors.New("uploaded video could not be read")
 
 // failureResponse maps a failure to what the admin is told. As everywhere else
 // in this service, the message is ours and the underlying error stays internal.
@@ -43,6 +56,13 @@ func classifyFailure(err error) failureResponse {
 		return failureResponse{
 			http.StatusInternalServerError, codeResultNotSaved,
 			"The analysis finished but could not be saved.",
+		}
+	}
+
+	if errors.Is(err, ErrUploadUnreadable) {
+		return failureResponse{
+			http.StatusBadRequest, codeVideoUnreadable,
+			"That video could not be read. Please try uploading it again.",
 		}
 	}
 

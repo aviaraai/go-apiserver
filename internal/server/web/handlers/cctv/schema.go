@@ -14,8 +14,14 @@ type GoshalaResponse struct {
 	PhotoURL  string  `json:"photo_url"`
 }
 
+// GoshalaPublicID needs BOTH tags: POST /cctv/analyse arrives as a JSON body
+// (Echo's JSON binder reads only the `json` tag, ignoring `form`), while
+// POST /cctv/analyse/upload arrives as multipart (Echo's form binder is the
+// reverse). Dropping either tag silently breaks binding for exactly one of
+// the two endpoints -- there was no `json` tag here before, which meant the
+// JSON path never actually populated this field.
 type AnalyseRequest struct {
-	GoshalaPublicID string `json:"goshala_public_id"`
+	GoshalaPublicID string `json:"goshala_public_id" form:"goshala_public_id"`
 }
 
 // AnalysisResponse is one completed analysis.
