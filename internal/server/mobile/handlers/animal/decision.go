@@ -279,3 +279,48 @@ func decideOnRawScores(ranked []rankedAnimal) (decision, reason, godhaarID strin
 func round6(x float64) float64 {
 	return math.Round(x*1e6) / 1e6
 }
+
+// lightglueDisagreementZone is the only inference_server zone value this
+// engine acts on. "likely_same" is calibrated just as cleanly as
+// "likely_different" (see client.go's SearchResponse doc) — it is left
+// unconsumed by choice, not because the signal is weaker: this engine only
+// ever lets outside evidence LOWER a verdict (attributeWeight already
+// follows the same rule for colour/horn agreement), and "likely_same" would
+// only ever matter as a promotion. "ambiguous" is a real "no opinion" and is
+// correctly excluded either way. Both are treated as no-ops here, same as
+// LightglueChecked == false.
+const lightglueDisagreementZone = "likely_different"
+
+// applyLightglueDisagreement demotes a verdict by exactly one step when
+// LightGlue's independent keypoint check disagrees with the embedding-based
+// decision. Applied AFTER decide() has already produced its verdict from the
+// score and colour/horn attribute logic — this is a second, independent
+// signal layered on top, not folded into rankCandidates/decide, so every
+// existing call site and test is untouched by its addition.
+//
+// Safety property, the LightGlue analogue of attributeWeight's gap bound:
+// this function can only ever move a verdict to a LOWER confidence() rung
+// (MATCH=2 -> REVIEW=1 -> UNKNOWN=0), never higher, and a nil/non-disagreeing
+// zone is always a no-op. TestLightglueCanOnlyDemote sweeps every
+// (Decision, zone) pair and proves confidence never increases.
+//
+// GodhaarID is deliberately left as-is even on a demotion to UNKNOWN:
+// responseGodhaarID() already drops it from the outward response once
+// Decision == UNKNOWN, and clearing it here too would just be a second place
+// for that same rule to (mis)apply.
+func applyLightglueDisagreement(v verdict, lightglueZone *string) verdict {
+	if lightglueZone == nil || *lightglueZone != lightglueDisagreementZone {
+		return v
+	}
+
+	switch v.Decision {
+	case "MATCH":
+		v.Decision = "REVIEW"
+	case "REVIEW":
+		v.Decision = "UNKNOWN"
+	default: // already UNKNOWN — nothing lower to demote to
+		return v
+	}
+	v.Reason += "_lightglue_demoted"
+	return v
+}

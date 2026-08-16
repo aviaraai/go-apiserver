@@ -60,6 +60,30 @@ type SearchResponse struct {
 	QueryColors ExtractedColors `json:"query_colors"`
 	HornShape   *string         `json:"horn_shape"`
 	TopMatches  []SearchMatch   `json:"top_matches"`
+
+	// LightGlue fusion tiebreaker (see inference_server's main.py and
+	// pipeline/lightglue_verify.py). Additive-only on the inference side: it
+	// describes the query against inference's OWN rank-1 embedding match,
+	// computed BEFORE this service's cattle-level aggregation and attribute
+	// adjustment, so it is an approximation of our own top candidate, not
+	// guaranteed to be the same animal in every case.
+	//
+	// LightglueChecked is false, and the other two are nil, whenever the
+	// tiebreaker didn't run for any reason (disabled, embedding score wasn't
+	// ambiguous, verifier unavailable, no cached crop for the candidate) —
+	// this is the normal case, not an error, and callers must treat it as "no
+	// opinion", never as "confirmed different".
+	//
+	// Both zones LightGlue can report are calibrated (pipeline/lightglue_
+	// verify.py: 28/28 clean false-positives below its low cutoff, 23/23
+	// clean true-positives above its high one) — "likely_same" is not weaker
+	// evidence than "likely_different". Only the latter is currently acted on
+	// (decision.go's applyLightglueDisagreement), and that is a deliberate
+	// choice to extend this engine's existing demote-only posture, not a
+	// reflection of which zone the calibration trusts more.
+	LightglueChecked    bool    `json:"lightglue_checked"`
+	LightglueNumMatches *int    `json:"lightglue_num_matches"`
+	LightglueZone       *string `json:"lightglue_zone"`
 }
 
 // registerEmbeddingCount is the number of muzzle embeddings a successful

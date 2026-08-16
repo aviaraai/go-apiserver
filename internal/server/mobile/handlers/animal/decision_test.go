@@ -270,6 +270,96 @@ func TestDecideNoCandidates(t *testing.T) {
 	}
 }
 
+// Reproduces the two real false positives found investigating the 2026-08-16
+// Uttarakhand precision test: two unrelated animals scored 0.748 and 0.788
+// against a local index (both land in the REVIEW band on raw score alone),
+// and inference_server's LightGlue tiebreaker read "likely_different" for
+// both. Before this change that reached the farmer as a plain REVIEW; this
+// confirms it now correctly demotes to UNKNOWN ("not registered").
+func TestLightglueDemotesRealFalsePositives(t *testing.T) {
+	zone := lightglueDisagreementZone
+
+	for _, score := range []float64{0.748, 0.788} {
+		ranked := rankCandidates(
+			map[string]float64{"A": score},
+			map[string]animalAttributes{"A": {}},
+			queryAttributes{},
+		)
+		v := decide(ranked)
+		if v.Decision != "REVIEW" {
+			t.Fatalf("score %.3f: raw decision = %s, want REVIEW (test setup is wrong, not the fix)", score, v.Decision)
+		}
+
+		demoted := applyLightglueDisagreement(v, &zone)
+		if demoted.Decision != "UNKNOWN" {
+			t.Errorf("score %.3f: decision after likely_different = %s, want UNKNOWN", score, demoted.Decision)
+		}
+		if !strings.HasSuffix(demoted.Reason, "_lightglue_demoted") {
+			t.Errorf("score %.3f: reason = %q, want it flagged as lightglue-demoted", score, demoted.Reason)
+		}
+		// The demotion must not silently invent a different animal or score.
+		if demoted.GodhaarID == nil || *demoted.GodhaarID != "A" {
+			t.Errorf("score %.3f: GodhaarID changed by demotion: %v", score, demoted.GodhaarID)
+		}
+		if demoted.Score != v.Score {
+			t.Errorf("score %.3f: Score changed by demotion: %v -> %v", score, v.Score, demoted.Score)
+		}
+	}
+}
+
+// The safety property, LightGlue's analogue of TestMatchAlwaysHasRawSeparation:
+// this function can only move a verdict to a strictly lower confidence rung,
+// or leave it unchanged. Swept over every (Decision, zone) combination rather
+// than a few examples, matching TestAttributesCannotConfidentlyReorder's style.
+func TestLightglueCanOnlyDemote(t *testing.T) {
+	same := "likely_same"
+	ambiguous := "ambiguous"
+	different := "likely_different"
+	unknownZone := "some_future_zone_value"
+
+	decisions := []string{"MATCH", "REVIEW", "UNKNOWN"}
+	zones := []*string{nil, &same, &ambiguous, &different, &unknownZone}
+
+	for _, decision := range decisions {
+		for _, zone := range zones {
+			id := "A"
+			v := verdict{Decision: decision, GodhaarID: &id, Reason: "base_reason"}
+			out := applyLightglueDisagreement(v, zone)
+
+			if confidence(out.Decision) > confidence(v.Decision) {
+				t.Fatalf("decision=%s zone=%v: confidence rose (%s -> %s)",
+					decision, derefLabel(zone), decision, out.Decision)
+			}
+
+			zoneVal := derefLabel(zone)
+			if zoneVal != lightglueDisagreementZone {
+				// Anything other than exactly "likely_different" — including
+				// nil, "likely_same", "ambiguous", and an unrecognised future
+				// value — must be a complete no-op.
+				if out != v {
+					t.Errorf("decision=%s zone=%v: expected no-op, got %+v (was %+v)",
+						decision, zoneVal, out, v)
+				}
+			}
+		}
+	}
+}
+
+// nil is the ordinary case (LightGlue never ran) and must behave exactly as
+// it does today: decide()'s own verdict, untouched, field for field.
+func TestLightglueNilIsNoOp(t *testing.T) {
+	ranked := rankCandidates(
+		map[string]float64{"A": 0.90, "B": 0.30},
+		map[string]animalAttributes{"A": {BodyColor: "brown"}, "B": {}},
+		queryAttributes{BodyColor: "brown"},
+	)
+	v := decide(ranked)
+	out := applyLightglueDisagreement(v, nil)
+	if out != v {
+		t.Errorf("nil zone changed the verdict: %+v -> %+v", v, out)
+	}
+}
+
 // Ranking must not depend on map iteration order.
 func TestRankingIsDeterministicOnTies(t *testing.T) {
 	scores := map[string]float64{"b": 0.9, "a": 0.9, "c": 0.9}

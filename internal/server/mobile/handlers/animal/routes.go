@@ -428,6 +428,11 @@ func (h *Handler) search(c echo.Context) error {
 			HornShape:   infResp.HornShape,
 		})
 		v = decide(ranked)
+
+		// LightGlue is a second, independent check on the SAME top candidate
+		// decide() just picked — a keypoint disagreement demotes by one step,
+		// see applyLightglueDisagreement's doc comment for the safety proof.
+		v = applyLightglueDisagreement(v, infResp.LightglueZone)
 	}
 
 	captureErr := h.captureSearch(c, v, frontImg, muzzleImg)
