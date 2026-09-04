@@ -3,6 +3,7 @@ package animal
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -205,6 +206,20 @@ func toCreateImages(results []uploadResult) []animal.CreateImage {
 		}
 	}
 	return out
+}
+
+// faceGeometryText converts the inference server's raw face_geometry JSON
+// into the *string CreateAnimal.FaceGeometry expects (see that field's
+// comment for why a string, not []byte). nil when the inference response
+// didn't carry the field at all — an older/mismatched inference build, or
+// the field being empty — so a partial rollout never fails registration
+// over an optional, supplementary signal.
+func faceGeometryText(raw json.RawMessage) *string {
+	if len(raw) == 0 {
+		return nil
+	}
+	s := string(raw)
+	return &s
 }
 
 func toRegisterResponse(a *animal.Animal) *RegisterResponse {

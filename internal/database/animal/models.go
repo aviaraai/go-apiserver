@@ -60,6 +60,16 @@ type CreateAnimal struct {
 	CreatedByEmail   string   `db:"created_by_email"`
 	UpdatedBy        string   `db:"updated_by"`
 	UpdatedByEmail   string   `db:"updated_by_email"`
+
+	// FaceGeometry is the inference server's raw face_geometry JSON
+	// (inference.RegisterResponse.FaceGeometry), passed through as a *string
+	// rather than []byte/json.RawMessage: pgx sends a Go string as text over
+	// the wire, and Postgres infers jsonb from the target column type (same
+	// convention as debug.JSONMap.Value() elsewhere in this codebase — do NOT
+	// add an explicit ::jsonb cast to the INSERT, sqlx can't parse
+	// `:name::type`). nil when the inference response didn't carry one.
+	// Nothing in this server reads this column back.
+	FaceGeometry *string `db:"face_geometry"`
 }
 
 type CreateEmbedding struct {

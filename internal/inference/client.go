@@ -34,6 +34,15 @@ type RegisterResponse struct {
 	ExtractedColors ExtractedColors `json:"extracted_colors"`
 	HornShape       *string         `json:"horn_shape"`
 	RegisteredAt    string          `json:"registered_at"`
+
+	// FaceGeometry is the inference server's supplementary, demote-only pose
+	// signal (see its schema.py FaceGeometry / pipeline/pose.py). Kept as raw
+	// JSON deliberately: nothing in this server reads or decides on it, it is
+	// only stored (see animal.CreateAnimal.FaceGeometry) for a future
+	// analysis/comparison step to read back out. json.RawMessage also means a
+	// response from an inference build that doesn't send this field yet
+	// decodes fine as nil — this field must stay optional on both sides.
+	FaceGeometry json.RawMessage `json:"face_geometry"`
 }
 
 type ExtractedColors struct {

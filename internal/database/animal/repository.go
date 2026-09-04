@@ -104,15 +104,20 @@ func (r *Repository) FindFAISSCandidates(ctx context.Context, lat, lng, bbox flo
 }
 
 func (r *Repository) CreateAnimalWithEmbeddingsAndImages(ctx context.Context, params CreateAnimalTx) (*Animal, error) {
+	// face_geometry is supplementary/return-only (see CreateAnimal.FaceGeometry
+	// and migrations/20260904150100_add_face_geometry_to_animals.sql) — stored
+	// so a future analysis/comparison step has it, not read back here or by
+	// anything else in this server. Deliberately absent from RETURNING for
+	// that same reason: nothing downstream of this call needs it.
 	const insertAnimalReturning = `
 		INSERT INTO animals (
 		    godhaar_id, farmer_id, animal_type, gender, breed, age, cost, insurance_premium,
 		    state, district, mandal, village, tag_id, latitude, longitude, health_remarks,
-		    body_color, muzzle_color, horn_shape, created_by, created_by_email, updated_by, updated_by_email
+		    body_color, muzzle_color, horn_shape, face_geometry, created_by, created_by_email, updated_by, updated_by_email
 		) VALUES (
 		    :godhaar_id, :farmer_id, :animal_type, :gender, :breed, :age, :cost, :insurance_premium,
 		    :state, :district, :mandal, :village, :tag_id, :latitude, :longitude, :health_remarks,
-		    :body_color, :muzzle_color, :horn_shape, :created_by, :created_by_email, :updated_by, :updated_by_email
+		    :body_color, :muzzle_color, :horn_shape, :face_geometry, :created_by, :created_by_email, :updated_by, :updated_by_email
 		) RETURNING id, godhaar_id, animal_type, gender, breed, age, cost, insurance_premium, tag_id, state, district, mandal, village;
 	`
 

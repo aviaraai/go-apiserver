@@ -295,6 +295,7 @@ func (h *Handler) register(c echo.Context) error {
 			BodyColor:        infResp.ExtractedColors.Body.Label,
 			MuzzleColor:      infResp.ExtractedColors.Muzzle.Label,
 			HornShape:        infResp.HornShape,
+			FaceGeometry:     faceGeometryText(infResp.FaceGeometry),
 			HealthRemarks:    req.HealthRemarks,
 			Latitude:         req.Latitude,
 			Longitude:        req.Longitude,
