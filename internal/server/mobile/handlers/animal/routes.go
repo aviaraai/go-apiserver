@@ -57,6 +57,29 @@ const searchRadiusKm = 3.0
 // animal and the runner-up, so a handful of embeddings is enough.
 const searchTopK = 5
 
+// searchRadiusTiersKm are the candidate radii search tries in order, stopping at
+// the first tier that finds at least one candidate. The first tier is the
+// tight, fast path (searchRadiusKm); the wider tier exists because a moved
+// animal, a different field visit, or a weak GPS fix all leave the animal's
+// registration point well outside 3 km — and the old behaviour answered those
+// searches with a hard UNKNOWN before the model was ever consulted. Widening is
+// safe: the decision engine still gates the verdict on the embedding score, so
+// extra candidates can only turn a no-candidate UNKNOWN into "something to
+// compare against", never into a confident wrong MATCH.
+//
+// Register does NOT use these tiers — its duplicate check stays on the tight
+// radius, because widening a duplicate check risks false-positive rejections
+// that block a registration, which is the worse failure.
+var searchRadiusTiersKm = []float64{searchRadiusKm, 50.0}
+
+// bboxDegreesForRadius returns a bounding-box half-width (in degrees) guaranteed
+// to contain the given radius circle. 1° latitude ≈ 111 km, plus a small margin;
+// the exact Haversine filter runs afterwards, so the box only needs to be a
+// superset, not tight.
+func bboxDegreesForRadius(radiusKm float64) float64 {
+	return radiusKm/111.0 + 0.05
+}
+
 func toAnimalResponse(a *animal.Animal) *AnimalResponse {
 	return &AnimalResponse{
 		GodhaarID:        a.GodhaarID,
@@ -327,6 +350,32 @@ func (h *Handler) register(c echo.Context) error {
 	return c.JSON(http.StatusCreated, toRegisterResponse(created))
 }
 
+// searchCandidates finds the animals a search should compare against, widening
+// the radius when a tighter tier finds nothing (see searchRadiusTiersKm). The
+// returned radiusKm is the effective radius of the tier that produced the rows;
+// radiusKm == 0 means the unbounded, index-wide fallback was used.
+func (h *Handler) searchCandidates(ctx context.Context, lat, lng float64) ([]animal.CandidateRow, float64, error) {
+	for _, radiusKm := range searchRadiusTiersKm {
+		rows, err := h.DB.FindFAISSCandidates(ctx, lat, lng, bboxDegreesForRadius(radiusKm))
+		if err != nil {
+			return nil, 0, err
+		}
+		if nearby := filterByRadius(rows, lat, lng, radiusKm); len(nearby) > 0 {
+			return nearby, radiusKm, nil
+		}
+	}
+
+	// Unbounded fallback: a bbox half-width of 180° covers every valid
+	// latitude/longitude, so this fetches every animal with an embedding and a
+	// location, and no radius filter is applied. Reached only when neither
+	// bounded tier found a candidate — the moved-across-the-state case.
+	rows, err := h.DB.FindFAISSCandidates(ctx, lat, lng, 180.0)
+	if err != nil {
+		return nil, 0, err
+	}
+	return rows, 0, nil
+}
+
 func (h *Handler) search(c echo.Context) error {
 	ctx := c.Request().Context()
 
@@ -354,11 +403,13 @@ func (h *Handler) search(c echo.Context) error {
 	}
 
 	// ── Bounding-box SQL pre-filter + exact Haversine radius filter ────────
-	candidateRows, err := h.DB.FindFAISSCandidates(ctx, req.Latitude, req.Longitude, bboxDegrees)
+	// Candidate selection widens when a tighter radius finds nothing — see
+	// searchCandidates — so a moved animal or a weak GPS fix isn't a guaranteed
+	// UNKNOWN before the model is ever consulted.
+	nearby, radiusUsed, err := h.searchCandidates(ctx, req.Latitude, req.Longitude)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to find candidates").SetInternal(err)
 	}
-	nearby := filterByRadius(candidateRows, req.Latitude, req.Longitude, searchRadiusKm)
 
 	// No animal registered near enough to compare against means the model is
 	// never consulted, and the verdict below stands as written. It is still
@@ -456,6 +507,7 @@ func (h *Handler) search(c echo.Context) error {
 		slog.Float64("gap", v.Gap),
 		slog.Float64("agreement", v.Agreement),
 		slog.Int("candidates", len(nearby)),
+		slog.Float64("radiusKm", radiusUsed), // 0 = unbounded (index-wide) fallback
 		slog.Float64("latitude", req.Latitude),
 		slog.Float64("longitude", req.Longitude),
 	}
