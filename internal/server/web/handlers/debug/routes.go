@@ -24,6 +24,7 @@ type Repository interface {
 	SearchByID(context.Context, string) (*debugdb.SearchRecordRow, error)
 	MatchedAnimalImages(context.Context, string, []string) ([]debugdb.AnimalImage, bool, error)
 	UpdateSearchVerification(context.Context, string, string) (*debugdb.SearchRecordRow, error)
+	MuzzleEmbeddings(context.Context) ([]debugdb.MuzzleEmbeddingRow, error)
 }
 
 type Handler struct {
@@ -42,6 +43,7 @@ func RegisterRoutes(g *echo.Group, h *Handler) {
 	debugGroup.GET("/searches", h.listSearches)
 	debugGroup.GET("/searches/:search_id", h.getSearch)
 	debugGroup.PATCH("/searches/:search_id/verify", h.verifySearch)
+	debugGroup.GET("/muzzle-embeddings", h.listMuzzleEmbeddings)
 }
 
 func (h *Handler) listRegistrationFailures(c echo.Context) error {
@@ -223,6 +225,49 @@ func (h *Handler) respondWithSearchDetail(c echo.Context, row *debugdb.SearchRec
 		CreatedByEmail: row.CreatedByEmail,
 		CreatedAt:      row.CreatedAt,
 	})
+}
+
+// listMuzzleEmbeddings answers scripts/backfill_muzzle_cache.py's one
+// question: every registered muzzle embedding, and a presigned URL to the
+// image it was computed from. See debugdb.MuzzleEmbeddings for why this join
+// has to live here rather than on inference_server's side.
+//
+// Unfiltered, like the other listings in this file: the backfill script
+// already knows what it has cached locally (it's reading its own
+// filesystem), so it does its own diffing against this full list rather than
+// this endpoint trying to guess which faiss_ids some particular deployed
+// host is missing.
+func (h *Handler) listMuzzleEmbeddings(c echo.Context) error {
+	ctx := c.Request().Context()
+
+	rows, err := h.DB.MuzzleEmbeddings(ctx)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to list muzzle embeddings").SetInternal(err)
+	}
+
+	out := make([]MuzzleEmbeddingItem, len(rows))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(8)
+	for i := range rows {
+		g.Go(func() error {
+			url, err := h.Storage.PresignedURL(gctx, rows[i].ImageKey)
+			if err != nil {
+				return err
+			}
+			out[i] = MuzzleEmbeddingItem{
+				FaissID:   rows[i].FaissID,
+				GodhaarID: rows[i].GodhaarID,
+				Sequence:  rows[i].Sequence,
+				ImageURL:  url,
+			}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to sign image urls").SetInternal(err)
+	}
+
+	return c.JSON(http.StatusOK, out)
 }
 
 // matchedAnimal resolves the animal a record named, if it named one, and signs

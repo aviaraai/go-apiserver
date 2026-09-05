@@ -204,6 +204,18 @@ type AnimalImage struct {
 	ImageKey  string `db:"image_key"`
 }
 
+// MuzzleEmbeddingRow is one registered muzzle embedding and the stored image it
+// was computed from — the join inference_server has no way to make itself,
+// since it holds neither the animals/embeddings/images tables nor object
+// storage credentials (see inference_server's pipeline/muzzle_crop_cache.py).
+// For MuzzleEmbeddings, the backfill script's one purpose.
+type MuzzleEmbeddingRow struct {
+	FaissID   int64  `db:"faiss_id"`
+	GodhaarID string `db:"godhaar_id"`
+	Sequence  int    `db:"sequence"`
+	ImageKey  string `db:"image_key"`
+}
+
 // Slot sets for MatchedAnimalImages. Both exclude the certificates, which play
 // no part in identification.
 var (

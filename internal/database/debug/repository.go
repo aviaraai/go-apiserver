@@ -177,6 +177,36 @@ func (r *Repository) MatchedAnimalImages(ctx context.Context, godhaarID string, 
 	return images, true, nil
 }
 
+// MuzzleEmbeddings lists every registered muzzle embedding together with the
+// stored image it was computed from: (faiss_id, godhaar_id, sequence,
+// image_key) for every row in embeddings JOIN images on (animal_id,
+// sequence). Exists solely for scripts/backfill_muzzle_cache.py --
+// inference_server's LightGlue crop/feature cache (pipeline/muzzle_crop_cache.py)
+// is keyed by faiss_id, but inference_server has no DB connection and no
+// object-storage credentials of its own to find or fetch the source image for
+// a faiss_id it's missing -- this is the one place that join can be made.
+//
+// Unpaginated, like ListSearches/ListRegistrationFailures above: this is
+// read once per backfill run, not on every dashboard load, and the table
+// sizes here are the same order of magnitude as those.
+func (r *Repository) MuzzleEmbeddings(ctx context.Context) ([]MuzzleEmbeddingRow, error) {
+	const query = `
+		SELECT e.faiss_id, a.godhaar_id, e.sequence, i.image_key
+		FROM embeddings e
+		JOIN animals a ON a.id = e.animal_id
+		JOIN images i ON i.animal_id = e.animal_id
+			AND i.image_type = 'muzzle'
+			AND i.sequence = e.sequence
+		WHERE e.embedding_type = 'muzzle'
+		ORDER BY a.godhaar_id, e.sequence;`
+
+	var rows []MuzzleEmbeddingRow
+	if err := r.db.SelectContext(ctx, &rows, query); err != nil {
+		return nil, fmt.Errorf("list muzzle embeddings: %w", err)
+	}
+	return rows, nil
+}
+
 // UpdateSearchVerification sets the human verdict on a matched search. It is
 // freely reversible — yes can become no and back — because a dashboard check is
 // exactly the kind of judgement that gets revised.

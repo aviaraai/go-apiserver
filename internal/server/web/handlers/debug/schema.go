@@ -164,3 +164,18 @@ type VerifyRequest struct {
 	SearchID string `param:"search_id"`
 	Verified string `json:"verified" form:"verified"`
 }
+
+// ── Muzzle embeddings (LightGlue cache backfill) ─────────────────────────────
+
+// MuzzleEmbeddingItem is one registered muzzle embedding, with a presigned
+// URL to the image it was computed from. Sole consumer:
+// scripts/backfill_muzzle_cache.py, run on inference_server's deployed host
+// to fill in LightGlue crop/feature cache entries for animals registered
+// before that cache existed (see debugdb.MuzzleEmbeddingRow for why this
+// join has to happen here, not on the inference_server side).
+type MuzzleEmbeddingItem struct {
+	FaissID   int64  `json:"faiss_id"`
+	GodhaarID string `json:"godhaar_id"`
+	Sequence  int    `json:"sequence"`
+	ImageURL  string `json:"image_url"`
+}
