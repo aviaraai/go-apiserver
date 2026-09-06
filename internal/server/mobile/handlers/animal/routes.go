@@ -384,16 +384,26 @@ func (h *Handler) search(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid request body")
 	}
 
-	muzzleHeader, err := c.FormFile("muzzle_image")
+	// ⚠️ Contract change: was a single "muzzle_image" field. Now 1-3 repeated
+	// "muzzle_images" parts, matching /register's existing multi-image shape
+	// (form.File["muzzle_images"] above) instead of a second, different
+	// convention. Aggregated via MEDIAN across whatever N is sent -- see
+	// CLAUDE.md's multi-photo search investigation and inference_server's
+	// faiss_index.py for why median, not max or mean.
+	form, err := c.MultipartForm()
 	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, "muzzle image is required")
+		return echo.NewHTTPError(http.StatusBadRequest, "invalid multipart form")
+	}
+	muzzleHeaders := form.File["muzzle_images"]
+	if len(muzzleHeaders) == 0 || len(muzzleHeaders) > 3 {
+		return echo.NewHTTPError(http.StatusBadRequest, "1-3 muzzle images are required")
 	}
 	frontHeader, err := c.FormFile("front_image")
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "front image is required")
 	}
 
-	muzzleImg, err := readAndValidateOne(muzzleHeader, "muzzle")
+	muzzleImgs, err := readAndValidate(muzzleHeaders, "muzzle")
 	if err != nil {
 		return uploadHTTPError(err)
 	}
@@ -445,14 +455,14 @@ func (h *Handler) search(c echo.Context) error {
 		infResp, err := h.Inference.Search(
 			ctx,
 			toInferencePayload(frontImg),
-			toInferencePayload(muzzleImg),
+			toInferencePayloads(muzzleImgs),
 			candidates,
 			searchTopK,
 			req.TagID,
 		)
 		if err != nil {
 			infErr := inference.Classify(err)
-			captureErr := h.captureSearchFailure(c, infErr, frontImg, muzzleImg)
+			captureErr := h.captureSearchFailure(c, infErr, frontImg, muzzleImgs)
 			return inferenceHTTPError(infErr, searchErrorDetails(infErr), captureErr)
 		}
 
@@ -487,7 +497,7 @@ func (h *Handler) search(c echo.Context) error {
 		v = applyLightglueDisagreement(v, infResp.LightglueZone)
 	}
 
-	captureErr := h.captureSearch(c, v, frontImg, muzzleImg)
+	captureErr := h.captureSearch(c, v, frontImg, muzzleImgs)
 
 	// The one log line this package emits. A search that succeeds returns 200
 	// and so never reaches customHTTPErrorHandler, which is where everything

@@ -103,7 +103,7 @@ const registerEmbeddingCount = 3
 
 type Client interface {
 	Register(ctx context.Context, front, muzzle []ImagePayload, candidates []Candidate, tagID *string) (*RegisterResponse, error)
-	Search(ctx context.Context, front, muzzle ImagePayload, candidateIDs []Candidate, topK int, tagID *string) (*SearchResponse, error)
+	Search(ctx context.Context, front ImagePayload, muzzle []ImagePayload, candidateIDs []Candidate, topK int, tagID *string) (*SearchResponse, error)
 }
 
 type HTTPClient struct {
@@ -141,7 +141,7 @@ func (c *HTTPClient) Register(ctx context.Context, front, muzzle []ImagePayload,
 	return &out, nil
 }
 
-func (c *HTTPClient) Search(ctx context.Context, front, muzzle ImagePayload, candidates []Candidate, topK int, tagID *string) (*SearchResponse, error) {
+func (c *HTTPClient) Search(ctx context.Context, front ImagePayload, muzzle []ImagePayload, candidates []Candidate, topK int, tagID *string) (*SearchResponse, error) {
 	body, contentType, err := buildSearchBody(front, muzzle, candidates, topK, tagID)
 	if err != nil {
 		return nil, transportError(CodeUnavailable, 0, err)
@@ -267,7 +267,7 @@ func buildRegisterBody(front, muzzle []ImagePayload, candidates []Candidate, tag
 	return body, writer.FormDataContentType(), nil
 }
 
-func buildSearchBody(front, muzzle ImagePayload, candidates []Candidate, topK int, tagID *string) (*bytes.Buffer, string, error) {
+func buildSearchBody(front ImagePayload, muzzle []ImagePayload, candidates []Candidate, topK int, tagID *string) (*bytes.Buffer, string, error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
@@ -282,10 +282,13 @@ func buildSearchBody(front, muzzle ImagePayload, candidates []Candidate, topK in
 	}
 
 	// Field names here must match the inference /search signature exactly:
-	// muzzle (File), front (File), top_k (Form), candidates (Form).
-	// A mismatch produces a FastAPI request-validation 422, which classifies as
-	// a contract violation rather than an image complaint.
-	if err := writeImageFields(writer, "muzzle", []ImagePayload{muzzle}); err != nil {
+	// muzzle_images (1-3 repeated File parts, same shape /register's own
+	// muzzle_images already uses -- see CLAUDE.md's multi-photo search
+	// investigation for why /search moved off a single muzzle photo),
+	// front (File), top_k (Form), candidates (Form). A mismatch produces a
+	// FastAPI request-validation 422, which classifies as a contract
+	// violation rather than an image complaint.
+	if err := writeImageFields(writer, "muzzle_images", muzzle); err != nil {
 		return nil, "", err
 	}
 	if err := writeImageFields(writer, "front", []ImagePayload{front}); err != nil {

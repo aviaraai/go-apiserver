@@ -68,10 +68,10 @@ func (h *Handler) captureRegistrationFailure(c echo.Context, infErr *inference.E
 // indistinguishable from a correct one. Only a human looking at the photos next
 // to the matched animal can tell them apart, which is what the verified column
 // on these rows is for.
-func (h *Handler) captureSearch(c echo.Context, v verdict, front, muzzle *imageFile) error {
+func (h *Handler) captureSearch(c echo.Context, v verdict, front *imageFile, muzzle []*imageFile) error {
 	ctx := c.Request().Context()
 	keys, uploadErr := h.uploadDebugImages(ctx, failureUploadTasks(
-		[]*imageFile{front}, []*imageFile{muzzle}))
+		[]*imageFile{front}, muzzle))
 
 	score := v.Score
 	record := debugdb.CreateSearchRecord{
@@ -107,14 +107,14 @@ func (h *Handler) captureSearch(c echo.Context, v verdict, front, muzzle *imageF
 
 // captureSearchFailure records a search the model refused to answer. Code and
 // server faults are skipped for the same reason as on the registration path.
-func (h *Handler) captureSearchFailure(c echo.Context, infErr *inference.Error, front, muzzle *imageFile) error {
+func (h *Handler) captureSearchFailure(c echo.Context, infErr *inference.Error, front *imageFile, muzzle []*imageFile) error {
 	if infErr.Class != inference.ClassDomain {
 		return nil
 	}
 
 	ctx := c.Request().Context()
 	keys, uploadErr := h.uploadDebugImages(ctx, failureUploadTasks(
-		[]*imageFile{front}, []*imageFile{muzzle}))
+		[]*imageFile{front}, muzzle))
 
 	code := string(infErr.Code)
 	record := debugdb.CreateSearchRecord{
