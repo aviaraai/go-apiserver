@@ -111,10 +111,12 @@ func TestAttributesDemoteBorderlineDecisions(t *testing.T) {
 	query := queryAttributes{BodyColor: "white", MuzzleColor: "pink", HornShape: strptr("straight")}
 	disagrees := animalAttributes{BodyColor: "brown", MuzzleColor: "black", HornShape: strptr("curved")}
 
-	// 0.83 is a MATCH on raw score; full disagreement pulls it to 0.80, under
-	// the 0.82 threshold, so it becomes a REVIEW instead.
+	// A raw score just above matchThreshold is a MATCH on raw score alone;
+	// full disagreement pulls it down by attributeWeight, back under
+	// matchThreshold, so it becomes a REVIEW instead.
+	borderline := matchThreshold + 0.003
 	ranked := rankCandidates(
-		map[string]float64{"A": 0.83, "B": 0.30},
+		map[string]float64{"A": borderline, "B": 0.30},
 		map[string]animalAttributes{"A": disagrees, "B": disagrees},
 		query,
 	)
@@ -125,8 +127,8 @@ func TestAttributesDemoteBorderlineDecisions(t *testing.T) {
 	if !strings.HasSuffix(v.Reason, "_attribute_shifted") {
 		t.Errorf("reason = %q, want it flagged as attribute-shifted", v.Reason)
 	}
-	if v.Score != 0.83 {
-		t.Errorf("Score = %v, want the model's own 0.83 reported unmodified", v.Score)
+	if v.Score != round6(borderline) {
+		t.Errorf("Score = %v, want the model's own %v reported unmodified", v.Score, borderline)
 	}
 }
 
@@ -136,10 +138,12 @@ func TestAttributesNeverPromote(t *testing.T) {
 	agrees := animalAttributes{BodyColor: "white", MuzzleColor: "pink", HornShape: strptr("straight")}
 	query := queryAttributes{BodyColor: "white", MuzzleColor: "pink", HornShape: strptr("straight")}
 
-	// 0.80 is a REVIEW on raw score. Full agreement lifts it to 0.83, over the
-	// match threshold, and the gap is wide — but promotion is not allowed.
+	// A raw score just under matchThreshold is a REVIEW. Full agreement lifts
+	// it back over matchThreshold, with a clear gap — but promotion is not
+	// allowed, so the decision must stay whatever the raw score alone gives.
+	nearThreshold := matchThreshold - 0.003
 	ranked := rankCandidates(
-		map[string]float64{"A": 0.80, "B": 0.10},
+		map[string]float64{"A": nearThreshold, "B": 0.10},
 		map[string]animalAttributes{"A": agrees, "B": agrees},
 		query,
 	)
@@ -166,7 +170,7 @@ func TestAttributesCanReorderCloseCandidates(t *testing.T) {
 	ranked := rankCandidates(
 		map[string]float64{
 			"top-by-score":     0.900,
-			"top-by-attribute": 0.890,
+			"top-by-attribute": 0.899,
 		},
 		map[string]animalAttributes{
 			"top-by-score":     {BodyColor: "brown", MuzzleColor: "black"},
@@ -184,8 +188,8 @@ func TestAttributesCanReorderCloseCandidates(t *testing.T) {
 }
 
 // The safety property that makes reordering acceptable: because the largest gap
-// the attribute term can manufacture (2*attributeWeight = 0.06) is smaller than
-// gapThreshold (0.08), attributes can never hand a confident MATCH to an animal
+// the attribute term can manufacture (2*attributeWeight = 0.01) is smaller than
+// gapThreshold (0.02), attributes can never hand a confident MATCH to an animal
 // the embeddings did not already rank first.
 //
 // Swept over the full space of two-candidate cases rather than a few examples,
@@ -244,7 +248,7 @@ func TestMatchAlwaysHasRawSeparation(t *testing.T) {
 	query := queryAttributes{BodyColor: "white", MuzzleColor: "pink"}
 
 	// Two identically-scored candidates, maximally split by attributes. The
-	// adjusted gap reaches 0.06, still short of the 0.08 a MATCH needs.
+	// adjusted gap reaches 0.01, still short of the 0.02 a MATCH needs.
 	ranked := rankCandidates(
 		map[string]float64{"A": 0.95, "B": 0.95},
 		map[string]animalAttributes{"A": agrees, "B": disagrees},

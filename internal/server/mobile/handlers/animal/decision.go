@@ -64,11 +64,25 @@ type verdict struct {
 	Reason    string
 }
 
-// Decision thresholds — sourced from the Godhaar V1 Architecture document.
+// Decision thresholds.
+//
+// reviewThreshold is sourced from the Godhaar V1 Architecture document and is
+// unchanged. matchThreshold and gapThreshold were re-calibrated 2026-09-06
+// against the real 189-animal Uttarakhand leave-one-out dataset
+// (inference_server/scratch_multiphoto_search_eval.py --calibrate), after
+// search moved to median-of-up-to-3-photo aggregation
+// (_restricted_search_sync): the original 0.82/0.08 pair was tuned against
+// single-photo/max-aggregated scores, and median aggregation shifted the
+// score and gap distributions enough that 0.82/0.08 was no longer even on the
+// true-accept/false-accept Pareto frontier for this population — 0.86/0.02
+// gave the best true-accept gain (35.4%→61.9%) for the smallest false-accept
+// increase (6.3%→8.5%) among the frontier points that keep the
+// attributeWeight safety invariant below intact. Re-run that script's
+// --calibrate mode against a fresh dataset before moving these again.
 const (
-	matchThreshold  = 0.82
+	matchThreshold  = 0.86
 	reviewThreshold = 0.72
-	gapThreshold    = 0.08
+	gapThreshold    = 0.02
 )
 
 // attributeWeight bounds how far attribute agreement can move a score.
@@ -81,9 +95,9 @@ const (
 //
 // The specific value matters, and two safety properties depend on it:
 //
-//   - 2*attributeWeight < gapThreshold (0.06 < 0.08). The largest gap the
+//   - 2*attributeWeight < gapThreshold (0.01 < 0.02). The largest gap the
 //     attribute term can manufacture between two identically-scored candidates
-//     is 0.06, so attributes alone can never produce the clear gap a MATCH
+//     is 0.01, so attributes alone can never produce the clear gap a MATCH
 //     requires. A MATCH always rests on a real separation in embedding scores.
 //
 //   - The same relation means that whenever attributes reorder the top two
@@ -93,8 +107,14 @@ const (
 //     picked. TestAttributesCannotConfidentlyReorder proves this over random
 //     inputs.
 //
-// Raising attributeWeight to 0.04 or above breaks both properties.
-const attributeWeight = 0.03
+// Lowered from 0.03 to 0.005 alongside the gapThreshold re-calibration above,
+// specifically to keep this invariant true at the new, smaller gapThreshold —
+// gapThreshold=0.02 would otherwise be unsafe at the old weight (2*0.03=0.06
+// is not < 0.02). This does shrink how often attribute agreement actually
+// changes a ranking: two candidates now have to be within 0.005 of each other
+// on raw score before attributes can reorder them, down from 0.03. Raising
+// attributeWeight to 0.01 or above breaks both properties above.
+const attributeWeight = 0.005
 
 // attributeAgreement scores how well a candidate's recorded traits match the
 // ones extracted from the query, over just the traits both sides actually know.
