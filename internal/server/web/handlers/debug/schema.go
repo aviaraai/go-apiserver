@@ -45,6 +45,13 @@ type MatchedAnimalResponse struct {
 	// dashboard can show the id without implying the animal is still there.
 	// Images is empty in that case.
 	Deleted bool `json:"deleted"`
+
+	// Claimed says whether the model asserted this animal (MATCH) or merely
+	// ranked it first without claiming it (REVIEW). Both are shown with their
+	// photos, because a reviewer needs the photos either way — but they are not
+	// the same statement, and a dashboard that renders them identically would
+	// be putting words in the model's mouth.
+	Claimed bool `json:"claimed"`
 }
 
 // ── Registration failures ────────────────────────────────────────────────────
@@ -108,9 +115,13 @@ type RegistrationFailureDetailResponse struct {
 //
 //	Verified: yes | no | not_verified
 //
-// Verified is always present but only ever moves off "not_verified" on a MATCH:
-// there is no claim to confirm on any other decision. A dashboard's "unreviewed
-// matches" view is decision=MATCH and verified=not_verified.
+// Verified is always present, and moves off "not_verified" on any row where
+// Verifiable is true — a MATCH, or a REVIEW that ranked a candidate. The two
+// answer different questions and are worth counting separately: on a MATCH it
+// measures FALSE ACCEPTS ("was this claim wrong"), on a REVIEW it measures
+// MISSES ("should this have been claimed"). Only the second can say whether the
+// match threshold sits too high. A dashboard's "unreviewed matches" view is
+// decision=MATCH and verified=not_verified.
 type SearchListItem struct {
 	SearchID string `json:"search_id"`
 	Decision string `json:"decision"`
@@ -124,8 +135,17 @@ type SearchListItem struct {
 	// inference domain codes the registration listing uses.
 	ErrorCode *string `json:"error_code"`
 
-	// GodhaarID is set only when Decision is MATCH.
+	// GodhaarID is set only when Decision is MATCH — it means "the model
+	// claimed this animal". A REVIEW's top candidate is deliberately NOT here;
+	// it arrives on the detail endpoint instead.
 	GodhaarID *string `json:"godhaar_id"`
+
+	// Verifiable says whether this row can be given a human verdict: a MATCH,
+	// or a REVIEW that ranked a candidate. The client must not re-derive this
+	// from Decision — a REVIEW's candidate lives in detail, which the listing
+	// does not carry, and the server computes it with the same predicate the
+	// update guard uses.
+	Verifiable bool `json:"verifiable"`
 
 	// ThumbnailURL is the searched photo, for the card. Null when the record
 	// kept no images.
@@ -148,7 +168,11 @@ type SearchDetailResponse struct {
 	// Images are the photos the searcher submitted: one front, one muzzle.
 	Images []ImageResponse `json:"images"`
 
-	// Matched is null for every decision except MATCH.
+	// Matched is the animal this search landed on, with its stored photos, so
+	// they can be put beside the query's. Present on a MATCH (where the model
+	// claimed it) and on a REVIEW that ranked a candidate (where it did not —
+	// read Matched.Claimed to tell them apart). Null on UNKNOWN and FAILED,
+	// which name no animal at all.
 	Matched *MatchedAnimalResponse `json:"matched_animal"`
 
 	// Detail carries the decision engine's working — adjusted_score, gap,

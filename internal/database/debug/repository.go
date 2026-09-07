@@ -96,14 +96,28 @@ func (r *Repository) RegistrationFailureByID(ctx context.Context, registrationID
 	return &row, nil
 }
 
+// verifiableSearch is "this search named an animal a human can be asked about":
+// the claim on a MATCH, the unclaimed top candidate on a REVIEW. It is one
+// string used by BOTH the listing (as a projected column, so the dashboard
+// knows which cards get a verify button) and UpdateSearchVerification (as the
+// WHERE guard, so the database accepts exactly those). Writing it twice is how
+// a button that answers 409 gets shipped.
+//
+// It is a compile-time constant interpolated into query text, never user input.
+// Its Go twin is VerifiableGodhaarID in models.go, covered by
+// TestVerifiableGodhaarID.
+const verifiableSearch = `(decision = 'MATCH'
+	OR (decision = 'REVIEW' AND detail->>'top_candidate' IS NOT NULL))`
+
 // ListSearches returns every search attempt, newest first. No join: decision,
 // verified and godhaar_id are all on the record, which is everything the
 // dashboard filters on.
 func (r *Repository) ListSearches(ctx context.Context) ([]SearchRecordListRow, error) {
-	const query = `
+	query := `
 		SELECT search_id::text AS search_id, decision, godhaar_id, score, error_code, verified, image_keys,
 		       app_version, os_version, device_model, device_manufacturer,
-		       created_by, created_by_email, created_at
+		       created_by, created_by_email, created_at,
+		       ` + verifiableSearch + ` AS verifiable
 		FROM animal_search_records
 		ORDER BY created_at DESC, id DESC;`
 
@@ -207,18 +221,30 @@ func (r *Repository) MuzzleEmbeddings(ctx context.Context) ([]MuzzleEmbeddingRow
 	return rows, nil
 }
 
-// UpdateSearchVerification sets the human verdict on a matched search. It is
-// freely reversible — yes can become no and back — because a dashboard check is
-// exactly the kind of judgement that gets revised.
+// UpdateSearchVerification sets the human verdict on a search that named an
+// animal. It is freely reversible — yes can become no and back — because a
+// dashboard check is exactly the kind of judgement that gets revised.
 //
-// The decision = 'MATCH' guard in the WHERE clause is what makes the two
-// outcomes distinguishable: a row that exists but is not a match reports
-// ErrNotVerifiable rather than a bare not-found.
+// A REVIEW is verifiable too, and the distinction it preserves matters. On a
+// MATCH the question is "was this claim right", and the answer measures FALSE
+// ACCEPTS. On a REVIEW the model claimed nothing — its candidate lives in
+// detail.top_candidate, deliberately NOT in the godhaar_id column (see
+// captureSearch, which keeps that column meaning "claimed") — so the question
+// is "was the top candidate the same animal", and the answer measures MISSES.
+// Only the second can say whether the match threshold sits too high, which is
+// why REVIEW had to become verifiable: every label this could previously
+// collect described the failure mode that was not hurting anyone.
+//
+// The guard is therefore "did this search name an animal at all", not "was it a
+// MATCH". An UNKNOWN, a FAILED, or a REVIEW with no candidate still reports
+// ErrNotVerifiable, and a row that does not exist still reports not-found.
+// detail->>'top_candidate' rather than the jsonb ? operator: lib/pq would read
+// ? as a bind placeholder.
 func (r *Repository) UpdateSearchVerification(ctx context.Context, searchID, verified string) (*SearchRecordRow, error) {
-	const query = `
+	query := `
 		UPDATE animal_search_records
 		SET verified = $2
-		WHERE search_id = $1::uuid AND decision = 'MATCH'
+		WHERE search_id = $1::uuid AND ` + verifiableSearch + `
 		RETURNING search_id::text AS search_id, decision, godhaar_id, score, error_code, verified,
 		          image_keys,
 		          app_version, os_version, device_model, device_manufacturer,

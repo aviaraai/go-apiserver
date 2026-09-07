@@ -136,6 +136,7 @@ func (h *Handler) listSearches(c echo.Context) error {
 			Score:          r.Score,
 			ErrorCode:      r.ErrorCode,
 			GodhaarID:      r.GodhaarID,
+			Verifiable:     r.Verifiable,
 			ThumbnailURL:   thumbs[i],
 			Device:         toDeviceResponse(r.DeviceColumns),
 			CreatedByEmail: r.CreatedByEmail,
@@ -189,7 +190,7 @@ func (h *Handler) verifySearch(c echo.Context) error {
 		case errors.Is(err, debugdb.ErrRecordNotFound):
 			return echo.NewHTTPError(http.StatusNotFound, "search record not found")
 		case errors.Is(err, debugdb.ErrNotVerifiable):
-			return echo.NewHTTPError(http.StatusConflict, "only a matched search can be verified")
+			return echo.NewHTTPError(http.StatusConflict, "only a search that named an animal can be verified")
 		default:
 			return echo.NewHTTPError(http.StatusInternalServerError, "failed to update verification").SetInternal(err)
 		}
@@ -207,9 +208,18 @@ func (h *Handler) respondWithSearchDetail(c echo.Context, row *debugdb.SearchRec
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to sign image urls").SetInternal(err)
 	}
-	matched, err := h.matchedAnimal(ctx, row.GodhaarID, debugdb.SearchSlots)
+	// A REVIEW names its candidate in detail.top_candidate rather than in the
+	// godhaar_id column, so resolving only the column left REVIEW cards showing
+	// an id with no photos beside it — nothing a human could actually judge.
+	// VerifiableGodhaarID is the shared definition of "this search named an
+	// animal", the same one UpdateSearchVerification's WHERE clause uses.
+	candidateID := debugdb.VerifiableGodhaarID(row.Decision, row.GodhaarID, row.Detail)
+	matched, err := h.matchedAnimal(ctx, candidateID, debugdb.SearchSlots)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to load matched animal").SetInternal(err)
+	}
+	if matched != nil {
+		matched.Claimed = row.Decision == debugdb.DecisionMatch
 	}
 
 	return c.JSON(http.StatusOK, SearchDetailResponse{

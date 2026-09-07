@@ -183,8 +183,14 @@ type SearchRecordRow struct {
 // all live on the record itself, so a listing needs no join at all.
 type SearchRecordListRow struct {
 	DeviceColumns
-	SearchID       string      `db:"search_id"`
-	Decision       string      `db:"decision"`
+	SearchID string `db:"search_id"`
+	Decision string `db:"decision"`
+
+	// Verifiable is computed by the listing query (see verifiableSearch), not
+	// stored. The dashboard cannot derive it: a REVIEW's candidate lives in
+	// detail, which the listing deliberately does not carry.
+	Verifiable bool `db:"verifiable"`
+
 	GodhaarID      *string     `db:"godhaar_id"`
 	Score          *float64    `db:"score"`
 	ErrorCode      *string     `db:"error_code"`
@@ -244,4 +250,39 @@ func MatchedGodhaarID(detail JSONMap) *string {
 		return nil
 	}
 	return &godhaarID
+}
+
+// DetailKeyTopCandidate is where a REVIEW records the animal it ranked first
+// WITHOUT claiming it. Deliberately not the godhaar_id column: that column
+// means "the model says this is the animal", and a REVIEW says precisely the
+// opposite (see captureSearch).
+const DetailKeyTopCandidate = "top_candidate"
+
+// TopCandidateGodhaarID reads a REVIEW's unclaimed top candidate out of a
+// detail payload. Absent on every other decision, and absent on a REVIEW that
+// ranked nothing at all.
+func TopCandidateGodhaarID(detail JSONMap) *string {
+	godhaarID, ok := detail[DetailKeyTopCandidate].(string)
+	if !ok || godhaarID == "" {
+		return nil
+	}
+	return &godhaarID
+}
+
+// VerifiableGodhaarID is the animal a human is being asked to judge: the claim
+// on a MATCH, the unclaimed top candidate on a REVIEW, nothing otherwise.
+//
+// It is the one definition of "this search named an animal", and it has to stay
+// in step with UpdateSearchVerification's WHERE clause. If this accepts a row
+// that the WHERE clause refuses, the dashboard renders a verify button that
+// answers 409.
+func VerifiableGodhaarID(decision string, godhaarID *string, detail JSONMap) *string {
+	switch decision {
+	case DecisionMatch:
+		return godhaarID
+	case DecisionReview:
+		return TopCandidateGodhaarID(detail)
+	default:
+		return nil
+	}
 }
