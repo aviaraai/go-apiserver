@@ -66,23 +66,54 @@ type verdict struct {
 
 // Decision thresholds.
 //
-// reviewThreshold is sourced from the Godhaar V1 Architecture document and is
-// unchanged. matchThreshold and gapThreshold were re-calibrated 2026-09-06
-// against the real 189-animal Uttarakhand leave-one-out dataset
-// (inference_server/scratch_multiphoto_search_eval.py --calibrate), after
-// search moved to median-of-up-to-3-photo aggregation
-// (_restricted_search_sync): the original 0.82/0.08 pair was tuned against
-// single-photo/max-aggregated scores, and median aggregation shifted the
-// score and gap distributions enough that 0.82/0.08 was no longer even on the
-// true-accept/false-accept Pareto frontier for this population — 0.86/0.02
-// gave the best true-accept gain (35.4%→61.9%) for the smallest false-accept
-// increase (6.3%→8.5%) among the frontier points that keep the
-// attributeWeight safety invariant below intact. Re-run that script's
-// --calibrate mode against a fresh dataset before moving these again.
+// Re-calibrated 2026-09-10 for the fusion+PCA-whitening embedding upgrade
+// (inference_server: DINOv2@518 + ImageNet ResNet50@384 + ResNet50@448,
+// concatenated, PCA-whitened to 256-d — see inference_server/CLAUDE.md and
+// pipeline/fusion_encoder.py). The 0.86/0.72/0.02 values below this comment's
+// previous revision were calibrated against the OLD plain-DINOv2 embedding
+// space and are meaningless against the new one: whitening decorrelates and
+// flattens the score distribution, so genuine-match cosine scores that used
+// to cluster around 0.85+ now median around 0.48. Applying the old
+// matchThreshold=0.86 to the new distribution measured a true-accept rate of
+// just 3.0% (6/203) — not a recalibration, a near-total loss of function.
+//
+// Re-derived via inference_server/scripts/calibrate_decision_thresholds.py
+// (a permanent tool, not a scratch script — scratch_multiphoto_search_eval.py
+// --calibrate's RealEmbedder is hardcoded to the old crop_cattle+DINOv2 path
+// and, per that repo's rule, scratch_* scripts are frozen evidence and are
+// never edited; the new script imports its reusable leave-one-out/
+// calibration functions unchanged and feeds them fusion-encoder embeddings
+// instead), against the real 224-animal Uttarakhand UKDE* dataset with
+// full-photo (no YOLO crop) embedding, median-of-up-to-3-photo aggregation.
+//
+// 12 of those 224 animals (6 tag-pairs) were excluded before calibrating:
+// their muzzle1/2/3.jpg files are byte-identical (md5-verified) to another
+// animal's tag — a dataset duplicate-registration labeling defect, not an
+// embedding failure — confirmed because the FIRST calibration pass showed
+// several "false accept" pairs scoring EXACTLY 1.0000 median similarity
+// (e.g. UKDEGR152028 <-> UKDEGR927838), which is only possible for
+// byte-identical input images. Calibrating against them would have tuned
+// the thresholds around a data-quality bug that cannot occur in production.
+//
+// On the remaining 203 animals: matchThreshold=0.22/gapThreshold=0.08 is the
+// highest-true-accept point on the true-accept/false-accept Pareto frontier
+// with ZERO false accepts (a confident WRONG match reaching a farmer, the
+// failure mode this decision engine is built to avoid) — true_accept=79.8%
+// (162/203), false_accept=0.0% (0/203), a large improvement over the old
+// embedding space's last measured full-stack strict recall (23.6%, 38/161,
+// see inference_server/CLAUDE.md). reviewThreshold=0.16 is the gap=0 score
+// floor maximizing true_accept-false_accept (true_accept=89.2%,
+// false_accept=4.4%) — false accepts at REVIEW are tolerable since a human
+// confirms/rejects before anything is stored, unlike MATCH.
+//
+// Re-run inference_server/scripts/calibrate_decision_thresholds.py against a
+// fresh dataset before moving these again — this is a different embedding
+// space than the one the 0.86/0.72/0.02 values were tuned for, so nothing
+// about that prior calibration's numbers transfers.
 const (
-	matchThreshold  = 0.86
-	reviewThreshold = 0.72
-	gapThreshold    = 0.02
+	matchThreshold  = 0.22
+	reviewThreshold = 0.16
+	gapThreshold    = 0.08
 )
 
 // attributeWeight bounds how far attribute agreement can move a score.
@@ -95,7 +126,7 @@ const (
 //
 // The specific value matters, and two safety properties depend on it:
 //
-//   - 2*attributeWeight < gapThreshold (0.01 < 0.02). The largest gap the
+//   - 2*attributeWeight < gapThreshold (0.01 < 0.08). The largest gap the
 //     attribute term can manufacture between two identically-scored candidates
 //     is 0.01, so attributes alone can never produce the clear gap a MATCH
 //     requires. A MATCH always rests on a real separation in embedding scores.
@@ -107,13 +138,13 @@ const (
 //     picked. TestAttributesCannotConfidentlyReorder proves this over random
 //     inputs.
 //
-// Lowered from 0.03 to 0.005 alongside the gapThreshold re-calibration above,
-// specifically to keep this invariant true at the new, smaller gapThreshold —
-// gapThreshold=0.02 would otherwise be unsafe at the old weight (2*0.03=0.06
-// is not < 0.02). This does shrink how often attribute agreement actually
-// changes a ranking: two candidates now have to be within 0.005 of each other
-// on raw score before attributes can reorder them, down from 0.03. Raising
-// attributeWeight to 0.01 or above breaks both properties above.
+// Unchanged (0.005) by the 2026-09-10 fusion-encoder recalibration above:
+// gapThreshold moved from 0.02 to 0.08, which only widens this invariant's
+// margin (2*0.005=0.01 < 0.08, vs. the previous 0.01 < 0.02) — there was no
+// need to move attributeWeight to keep it safe, and no measurement was taken
+// to justify raising it just because there's now headroom. Re-derive
+// deliberately, from real data, if that's ever wanted — don't raise it
+// simply because the invariant would still hold.
 const attributeWeight = 0.005
 
 // attributeAgreement scores how well a candidate's recorded traits match the

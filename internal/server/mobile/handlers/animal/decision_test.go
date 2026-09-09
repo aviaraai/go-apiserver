@@ -93,10 +93,11 @@ func TestAttributesCannotOverturnDecisiveScores(t *testing.T) {
 		t.Errorf("decisive score with full disagreement = %s, want MATCH (reason %s)", v.Decision, v.Reason)
 	}
 
-	// A clearly-too-low score with every attribute agreeing stays unknown.
+	// A clearly-too-low score (well under reviewThreshold) with every
+	// attribute agreeing stays unknown.
 	agrees := animalAttributes{BodyColor: "white", MuzzleColor: "pink", HornShape: strptr("straight")}
 	ranked = rankCandidates(
-		map[string]float64{"A": 0.50},
+		map[string]float64{"A": reviewThreshold - 0.05},
 		map[string]animalAttributes{"A": agrees},
 		query,
 	)
@@ -116,7 +117,7 @@ func TestAttributesDemoteBorderlineDecisions(t *testing.T) {
 	// matchThreshold, so it becomes a REVIEW instead.
 	borderline := matchThreshold + 0.003
 	ranked := rankCandidates(
-		map[string]float64{"A": borderline, "B": 0.30},
+		map[string]float64{"A": borderline, "B": reviewThreshold - 0.05},
 		map[string]animalAttributes{"A": disagrees, "B": disagrees},
 		query,
 	)
@@ -154,7 +155,7 @@ func TestAttributesNeverPromote(t *testing.T) {
 
 	// The same holds at the lower threshold.
 	ranked = rankCandidates(
-		map[string]float64{"A": 0.70},
+		map[string]float64{"A": reviewThreshold - 0.05},
 		map[string]animalAttributes{"A": agrees},
 		query,
 	)
