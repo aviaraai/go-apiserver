@@ -48,11 +48,11 @@ func (r *Repository) RecordSearch(ctx context.Context, p CreateSearchRecord) err
 		INSERT INTO animal_search_records (
 			decision, godhaar_id, score, error_code, image_keys,
 			app_version, os_version, device_model, device_manufacturer,
-			detail, created_by, created_by_email
+			detail, lightglue_candidates, created_by, created_by_email
 		) VALUES (
 			:decision, :godhaar_id, :score, :error_code, :image_keys,
 			:app_version, :os_version, :device_model, :device_manufacturer,
-			:detail, :created_by, :created_by_email
+			:detail, :lightglue_candidates, :created_by, :created_by_email
 		)`
 
 	if _, err := r.db.NamedExecContext(ctx, query, p); err != nil {

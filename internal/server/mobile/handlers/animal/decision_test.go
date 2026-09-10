@@ -1,6 +1,8 @@
 package animal
 
 import (
+	"math/rand"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -363,6 +365,82 @@ func TestLightglueNilIsNoOp(t *testing.T) {
 	if out != v {
 		t.Errorf("nil zone changed the verdict: %+v -> %+v", v, out)
 	}
+}
+
+// The safety property applyLightglueRerank's doc comment states: (1) an
+// already-MATCH verdict is never touched, and (2) a candidate can only reach
+// a MORE confident decision than the original if its OWN raw score/gap
+// independently clears classify()'s bar. Swept over randomised inputs rather
+// than a handful of examples, matching TestAttributesCannotConfidentlyReorder
+// and TestLightglueCanOnlyDemote's own style for a safety proof.
+func TestLightglueRerankSafety(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	names := []string{"A", "B", "C", "D"}
+
+	var matchNeverTouched, promotions, noOpAgreements, sameOrLessConfident int
+
+	for trial := 0; trial < 5000; trial++ {
+		n := 2 + rng.Intn(3) // 2..4 candidates
+		scores := make(map[string]float64, n)
+		for i := 0; i < n; i++ {
+			scores[names[i]] = rng.Float64()
+		}
+		ranked := rankCandidates(scores, map[string]animalAttributes{}, queryAttributes{})
+		v := decide(ranked)
+
+		byRawScore := make([]rankedAnimal, len(ranked))
+		copy(byRawScore, ranked)
+		sort.Slice(byRawScore, func(i, j int) bool { return byRawScore[i].Score > byRawScore[j].Score })
+
+		evidence := make(map[string]lightglueEvidence)
+		for i := 0; i < n; i++ {
+			if rng.Float64() < 0.7 { // some candidates have no cached crop
+				ratio := rng.Float64()
+				nm := rng.Intn(900)
+				evidence[names[i]] = lightglueEvidence{MatchRatio: &ratio, NumMatches: &nm}
+			}
+		}
+
+		before := v
+		out := applyLightglueRerank(v, byRawScore, evidence)
+
+		if before.Decision == "MATCH" {
+			matchNeverTouched++
+			if out != before {
+				t.Fatalf("trial %d: an already-MATCH verdict was changed: %+v -> %+v", trial, before, out)
+			}
+			continue
+		}
+
+		if out.GodhaarID != nil && before.GodhaarID != nil && *out.GodhaarID == *before.GodhaarID {
+			noOpAgreements++
+			continue
+		}
+
+		if confidence(out.Decision) > confidence(before.Decision) {
+			promotions++
+			// The promoted candidate's own Score/Gap must independently
+			// satisfy classify() — recompute it exactly as
+			// applyLightglueRerank should have, and confirm the reported
+			// decision matches what classify() alone would grant it.
+			wantDecision, _ := classify(out.Score, out.Gap)
+			if wantDecision != out.Decision {
+				t.Fatalf("trial %d: promoted decision %s does not match classify(%.4f, %.4f)=%s — "+
+					"the promoted candidate did not independently clear its own bar",
+					trial, out.Decision, out.Score, out.Gap, wantDecision)
+			}
+		} else {
+			sameOrLessConfident++
+		}
+	}
+
+	if matchNeverTouched == 0 || promotions == 0 {
+		t.Fatalf("sweep was vacuous: %d already-MATCH cases, %d promotions (want both > 0)",
+			matchNeverTouched, promotions)
+	}
+	t.Logf("swept %d already-MATCH (untouched), %d promotions (independently verified), "+
+		"%d no-op agreements, %d same-or-less-confident", matchNeverTouched, promotions,
+		noOpAgreements, sameOrLessConfident)
 }
 
 // Ranking must not depend on map iteration order.

@@ -68,7 +68,7 @@ func (h *Handler) captureRegistrationFailure(c echo.Context, infErr *inference.E
 // indistinguishable from a correct one. Only a human looking at the photos next
 // to the matched animal can tell them apart, which is what the verified column
 // on these rows is for.
-func (h *Handler) captureSearch(c echo.Context, v verdict, front *imageFile, muzzle []*imageFile) error {
+func (h *Handler) captureSearch(c echo.Context, v verdict, front *imageFile, muzzle []*imageFile, lightglueCandidates debugdb.LightglueCandidates) error {
 	ctx := c.Request().Context()
 	keys, uploadErr := h.uploadDebugImages(ctx, failureUploadTasks(
 		[]*imageFile{front}, muzzle))
@@ -87,8 +87,9 @@ func (h *Handler) captureSearch(c echo.Context, v verdict, front *imageFile, muz
 			"top_k":          searchTopK,
 			"radius_km":      searchRadiusKm,
 		},
-		CreatedBy:      middleware.UserIDFromContext(c),
-		CreatedByEmail: middleware.EmailFromContext(c),
+		LightglueCandidates: lightglueCandidates,
+		CreatedBy:           middleware.UserIDFromContext(c),
+		CreatedByEmail:      middleware.EmailFromContext(c),
 	}
 	// The table only accepts a godhaar_id on a MATCH: a REVIEW is explicitly
 	// not a claim about which animal this is, and promoting it to the column

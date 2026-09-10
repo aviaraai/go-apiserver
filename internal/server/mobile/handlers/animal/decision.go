@@ -375,3 +375,263 @@ func applyLightglueDisagreement(v verdict, lightglueZone *string) verdict {
 	v.Reason += "_lightglue_demoted"
 	return v
 }
+
+// ── LightGlue top-K re-ranking (promotes LightGlue from a demote-only veto
+//    on the single top-1 candidate to a signal across all embedding
+//    candidates the inference server returned) ─────────────────────────────
+//
+// Gated on scripts/calibrate_decision_thresholds.py's sibling gate,
+// inference_server's scratch_rerank_eval.py — see that script for the
+// measured numbers this shipped on (baseline top-1 vs. re-ranked top-1 vs.
+// the oracle top-K ceiling, at K in 3/5/10/20). rrfC and the RRF shape must
+// match pipeline/rerank.py's RRF_C verbatim; the two are not shared code
+// (Go and Python), only shared math.
+const rrfC = 60
+
+// lightglueEvidence is one candidate's LightGlue re-rank evidence. MatchRatio
+// is nil when that candidate had no cached crop to compare against (see
+// MUZZLE_CROP_CACHE_DIR's coverage gap) — rerankByLightglue's graceful-
+// degradation contract (below) treats that exactly like inference_server's
+// pipeline/rerank.py: a missing rank contributes nothing to the RRF sum
+// rather than the worst possible rank.
+type lightglueEvidence struct {
+	NumMatches *int
+	MatchRatio *float64
+}
+
+// rerankByLightglue combines each candidate's RAW-embedding-score rank
+// (byRawScore must already be sorted by Score descending — the same
+// ordering decideOnRawScores produces, deliberately NOT the attribute-
+// adjusted order: LightGlue evidence is combined with the embedding signal
+// only, so the two independent, bounded nudges (attribute agreement here,
+// LightGlue there) never compound on the same ranking pass) with its
+// LightGlue match_ratio rank via reciprocal rank fusion, and returns a new
+// slice in the combined order. A candidate with no LightGlue evidence
+// keeps its embedding-derived position relative to other evidence-less
+// candidates (see lightglueEvidence's doc comment) rather than being
+// pushed to the bottom.
+func rerankByLightglue(byRawScore []rankedAnimal, evidence map[string]lightglueEvidence) []rankedAnimal {
+	if len(byRawScore) < 2 {
+		return byRawScore
+	}
+
+	type withRatio struct {
+		idx   int
+		ratio float64
+		count int
+	}
+	var withEvidence []withRatio
+	for i, r := range byRawScore {
+		ev, ok := evidence[r.GodhaarID]
+		if !ok || ev.MatchRatio == nil {
+			continue
+		}
+		count := 0
+		if ev.NumMatches != nil {
+			count = *ev.NumMatches
+		}
+		withEvidence = append(withEvidence, withRatio{idx: i, ratio: *ev.MatchRatio, count: count})
+	}
+	sort.Slice(withEvidence, func(i, j int) bool {
+		if withEvidence[i].ratio != withEvidence[j].ratio {
+			return withEvidence[i].ratio > withEvidence[j].ratio
+		}
+		return withEvidence[i].count > withEvidence[j].count
+	})
+	lightglueRank := make(map[int]int, len(withEvidence)) // byRawScore index -> 1-indexed lightglue rank
+	for rank, w := range withEvidence {
+		lightglueRank[w.idx] = rank + 1
+	}
+
+	type combo struct {
+		idx   int
+		score float64
+	}
+	combos := make([]combo, len(byRawScore))
+	for i := range byRawScore {
+		s := 1.0 / float64(rrfC+i+1)
+		if lgRank, ok := lightglueRank[i]; ok {
+			s += 1.0 / float64(rrfC+lgRank)
+		}
+		combos[i] = combo{idx: i, score: s}
+	}
+	sort.SliceStable(combos, func(i, j int) bool { return combos[i].score > combos[j].score })
+
+	out := make([]rankedAnimal, len(byRawScore))
+	for i, c := range combos {
+		out[i] = byRawScore[c.idx]
+	}
+	return out
+}
+
+// lightglueRankIndex 1-indexes byRawScore's entries by LightGlue match_ratio
+// descending (ties by NumMatches descending) — the same ordering
+// rerankByLightglue computes internally, exposed here so callers that only
+// need the ranks (e.g. debug.go's persistence) don't have to re-derive the
+// combined slice just to read them back off.
+func lightglueRankIndex(byRawScore []rankedAnimal, evidence map[string]lightglueEvidence) map[string]int {
+	type withRatio struct {
+		gid   string
+		ratio float64
+		count int
+	}
+	var withEvidence []withRatio
+	for _, r := range byRawScore {
+		ev, ok := evidence[r.GodhaarID]
+		if !ok || ev.MatchRatio == nil {
+			continue
+		}
+		count := 0
+		if ev.NumMatches != nil {
+			count = *ev.NumMatches
+		}
+		withEvidence = append(withEvidence, withRatio{gid: r.GodhaarID, ratio: *ev.MatchRatio, count: count})
+	}
+	sort.Slice(withEvidence, func(i, j int) bool {
+		if withEvidence[i].ratio != withEvidence[j].ratio {
+			return withEvidence[i].ratio > withEvidence[j].ratio
+		}
+		return withEvidence[i].count > withEvidence[j].count
+	})
+	out := make(map[string]int, len(withEvidence))
+	for rank, w := range withEvidence {
+		out[w.gid] = rank + 1
+	}
+	return out
+}
+
+// combinedRankIndex 1-indexes byRawScore's entries by the SAME reciprocal-
+// rank-fusion score rerankByLightglue sorts on, for the same
+// persistence-only reason lightglueRankIndex exists.
+func combinedRankIndex(byRawScore []rankedAnimal, evidence map[string]lightglueEvidence) map[string]int {
+	reranked := rerankByLightglue(byRawScore, evidence)
+	out := make(map[string]int, len(reranked))
+	for i, r := range reranked {
+		out[r.GodhaarID] = i + 1
+	}
+	return out
+}
+
+// buildLightglueCandidateEvidence assembles the full per-candidate picture
+// (debug.go's LightglueCandidateEvidence) for persistence — every top-K
+// candidate's embedding rank, its own LightGlue evidence (nil fields when it
+// had no cached crop), and its rank under both orderings. Never touches the
+// actual decision, purely a diagnostic record so a past search's re-rank
+// behaviour can be reconstructed later without re-running inference.
+func buildLightglueCandidateEvidence(
+	byRawScore []rankedAnimal,
+	evidence map[string]lightglueEvidence,
+	faissIDByGodhaarID map[string]int64,
+) []lightglueCandidateEvidenceView {
+	lgRank := lightglueRankIndex(byRawScore, evidence)
+	combinedRank := combinedRankIndex(byRawScore, evidence)
+
+	out := make([]lightglueCandidateEvidenceView, 0, len(byRawScore))
+	for i, r := range byRawScore {
+		ev := evidence[r.GodhaarID]
+		var lightglueRank *int
+		if lr, ok := lgRank[r.GodhaarID]; ok {
+			v := lr
+			lightglueRank = &v
+		}
+		out = append(out, lightglueCandidateEvidenceView{
+			GodhaarID:           r.GodhaarID,
+			FaissID:             faissIDByGodhaarID[r.GodhaarID],
+			EmbeddingScore:      r.Score,
+			EmbeddingRank:       i + 1,
+			LightglueNumMatches: ev.NumMatches,
+			LightglueMatchRatio: ev.MatchRatio,
+			LightglueRank:       lightglueRank,
+			CombinedRank:        combinedRank[r.GodhaarID],
+		})
+	}
+	return out
+}
+
+// lightglueCandidateEvidenceView mirrors debugdb.LightglueCandidateEvidence
+// field-for-field. Kept as a distinct type here (rather than importing the
+// debugdb package into this file) so decision.go stays free of a persistence
+// dependency — routes.go, which already imports debugdb, converts between
+// the two with a one-line loop.
+type lightglueCandidateEvidenceView struct {
+	GodhaarID           string
+	FaissID             int64
+	EmbeddingScore      float64
+	EmbeddingRank       int
+	LightglueNumMatches *int
+	LightglueMatchRatio *float64
+	LightglueRank       *int
+	CombinedRank        int
+}
+
+// applyLightglueRerank may replace decide()'s chosen candidate with a
+// different one from the top-K embedding matches when LightGlue's
+// independent keypoint evidence favors it more than the raw embedding
+// ranking alone did.
+//
+// SAFETY INVARIANT (the two options considered were "require the promoted
+// candidate to independently clear matchThreshold on its own raw score" and
+// "only re-rank within the REVIEW band" — this applies BOTH, deliberately
+// stacking them rather than picking one):
+//
+//  1. An already-MATCH verdict is NEVER revisited. Re-ranking only ever runs
+//     when v.Decision is REVIEW or UNKNOWN — exactly the two bands where the
+//     raw-score-only pipeline was not confident enough to name an animal
+//     hands-free. This alone guarantees the auto-MATCH false-accept rate
+//     cannot rise: nothing here can change which candidate an already-
+//     confident MATCH names, or turn a MATCH into something else either.
+//  2. A candidate promoted by re-ranking can only reach a decision as
+//     confident as classify() grants its OWN raw embedding score and its OWN
+//     gap over whatever re-ranking put in second place — the exact same
+//     matchThreshold/gapThreshold bar every other MATCH in this file clears.
+//     LightGlue evidence changes WHICH candidate is being measured against
+//     that bar; it never lowers the bar itself, and it never contributes a
+//     score of its own to Adjusted/Score.
+//
+// TestLightglueRerankSafety pins both properties by sweeping random inputs,
+// the same style TestAttributesCannotConfidentlyReorder and
+// TestLightglueCanOnlyDemote already use for their own safety proofs.
+func applyLightglueRerank(v verdict, byRawScore []rankedAnimal, evidence map[string]lightglueEvidence) verdict {
+	if v.Decision == "MATCH" {
+		return v
+	}
+	if len(byRawScore) < 2 || len(evidence) == 0 {
+		return v
+	}
+
+	reranked := rerankByLightglue(byRawScore, evidence)
+	newTop := reranked[0]
+	if v.GodhaarID != nil && newTop.GodhaarID == *v.GodhaarID {
+		return v // rerank agreed with the existing pick — nothing changes
+	}
+
+	newSecond := newTop.Score
+	if len(reranked) > 1 {
+		newSecond = reranked[1].Score
+	}
+	newGap := newTop.Score - newSecond
+	newDecision, newReason := classify(newTop.Score, newGap)
+
+	if confidence(newDecision) <= confidence(v.Decision) {
+		// The rerank's pick isn't even as confident as what decide() already
+		// had — keep the original rather than swap to a same-or-worse verdict
+		// for a different animal.
+		return v
+	}
+
+	id := newTop.GodhaarID
+	return verdict{
+		GodhaarID: &id,
+		// No attribute term is applied to a LightGlue-promoted candidate —
+		// AdjustedScore intentionally mirrors Score rather than inventing an
+		// agreement value this function never computed. Not applying one is
+		// strictly more conservative than applying one that could only ever
+		// lower confidence anyway.
+		Score:         round6(newTop.Score),
+		AdjustedScore: round6(newTop.Score),
+		Gap:           round6(newGap),
+		Agreement:     0,
+		Decision:      newDecision,
+		Reason:        newReason + "_lightglue_reranked",
+	}
+}

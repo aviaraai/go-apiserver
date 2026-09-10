@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"mime/multipart"
 	"net/http"
+	"sort"
 
 	"go-api-server/internal/database/animal"
 	debugdb "go-api-server/internal/database/debug"
@@ -53,9 +54,21 @@ const bboxDegrees = 0.05
 const searchRadiusKm = 3.0
 
 // searchTopK bounds how many embedding matches the inference server returns per
-// search. Kept small to limit FAISS load — the decision only needs the top
-// animal and the runner-up, so a handful of embeddings is enough.
-const searchTopK = 5
+// search, AND how many of them the LightGlue top-K reranker (decision.go's
+// rerankByLightglue/applyLightglueRerank) gets to consider.
+//
+// Raised 5 -> 10 for the LightGlue re-ranking upgrade — 5 was a hard ceiling
+// on achievable recall, not just a load-limiting knob: inference_server's
+// scratch_rerank_eval.py measured the correct animal's own embedding
+// landing outside the top-5 often enough that even a PERFECT re-ranker
+// (the oracle row: top-K recall) could only reach 88.7% at K=5, vs. 93.5%
+// at K=10 — a real 4.8-point ceiling that no amount of re-ranking logic
+// could ever close while capped at 5. See
+// inference_server/pipeline/lightglue_verify.py's LIGHTGLUE_RERANK_TOP_K
+// comment for the full K=3/5/10/20 table this was picked from (K=10:
+// +4.7pp measured top-1 gain over baseline at a bounded latency cost;
+// K=20 nearly doubles that cost for only +1.8pp more).
+const searchTopK = 10
 
 // searchRadiusTiersKm are the candidate radii search tries in order, stopping at
 // the first tier that finds at least one candidate. The first tier is the
@@ -427,6 +440,7 @@ func (h *Handler) search(c echo.Context) error {
 	// "searched, found nothing", and leaving it out would make the no-match
 	// rate look better than it is.
 	v := verdict{Decision: "UNKNOWN", Reason: "no_candidates"}
+	var lgCandidates debugdb.LightglueCandidates
 
 	if len(nearby) > 0 {
 		// Build lookup tables from faiss_id: one row per embedding, 3 per
@@ -467,7 +481,14 @@ func (h *Handler) search(c echo.Context) error {
 		}
 
 		// ── Aggregate embedding-level → cattle-level (max score) ───────────
+		// lightglueEv rides along the SAME max-score selection: whichever
+		// embedding match gave an animal its cattleScores entry is also the
+		// one whose per-candidate LightGlue evidence represents that animal
+		// for the re-ranker below — the embedding this candidate is actually
+		// being compared on, not an arbitrary one of its (up to 3) matches.
 		cattleScores := make(map[string]float64)
+		lightglueEv := make(map[string]lightglueEvidence)
+		bestFaissID := make(map[string]int64)
 		for _, m := range infResp.TopMatches {
 			gid, ok := faissToGodhaar[m.FaissID]
 			if !ok {
@@ -476,6 +497,11 @@ func (h *Handler) search(c echo.Context) error {
 			}
 			if s, seen := cattleScores[gid]; !seen || m.Score > s {
 				cattleScores[gid] = m.Score
+				bestFaissID[gid] = m.FaissID
+				lightglueEv[gid] = lightglueEvidence{
+					NumMatches: m.LightglueNumMatches,
+					MatchRatio: m.LightglueMatchRatio,
+				}
 			}
 		}
 
@@ -495,9 +521,44 @@ func (h *Handler) search(c echo.Context) error {
 		// decide() just picked — a keypoint disagreement demotes by one step,
 		// see applyLightglueDisagreement's doc comment for the safety proof.
 		v = applyLightglueDisagreement(v, infResp.LightglueZone)
+
+		// Top-K re-ranking: may replace the chosen candidate with a different
+		// one from the SAME top-K embedding matches when LightGlue's
+		// keypoint evidence favors it more than raw embedding score alone —
+		// see applyLightglueRerank's doc comment for the two-part safety
+		// invariant (never touches an already-MATCH verdict; a promoted
+		// candidate must independently clear matchThreshold/gapThreshold on
+		// its own raw score). Needs the RAW-score ordering, not `ranked`'s
+		// attribute-adjusted one — rerankByLightglue's own doc comment
+		// explains why the two nudges must not compound on one pass.
+		byRawScore := make([]rankedAnimal, len(ranked))
+		copy(byRawScore, ranked)
+		sort.Slice(byRawScore, func(i, j int) bool { return byRawScore[i].Score > byRawScore[j].Score })
+		v = applyLightglueRerank(v, byRawScore, lightglueEv)
+
+		// Persist the full top-K evidence picture (not just the decided
+		// verdict) so a past search can be diagnosed once thresholds need
+		// re-calibrating — see LightglueCandidateEvidence's doc comment.
+		// bestFaissID is the SAME embedding each candidate's cattleScores/
+		// lightglueEv entry came from, not an arbitrary one of its (up to 3)
+		// registered photos.
+		views := buildLightglueCandidateEvidence(byRawScore, lightglueEv, bestFaissID)
+		lgCandidates = make(debugdb.LightglueCandidates, len(views))
+		for i, view := range views {
+			lgCandidates[i] = debugdb.LightglueCandidateEvidence{
+				GodhaarID:           view.GodhaarID,
+				FaissID:             view.FaissID,
+				EmbeddingScore:      view.EmbeddingScore,
+				EmbeddingRank:       view.EmbeddingRank,
+				LightglueNumMatches: view.LightglueNumMatches,
+				LightglueMatchRatio: view.LightglueMatchRatio,
+				LightglueRank:       view.LightglueRank,
+				CombinedRank:        view.CombinedRank,
+			}
+		}
 	}
 
-	captureErr := h.captureSearch(c, v, frontImg, muzzleImgs)
+	captureErr := h.captureSearch(c, v, frontImg, muzzleImgs, lgCandidates)
 
 	// The one log line this package emits. A search that succeeds returns 200
 	// and so never reaches customHTTPErrorHandler, which is where everything

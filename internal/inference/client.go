@@ -57,11 +57,22 @@ type ColorLabel struct {
 // SearchMatch is one embedding-level match returned by the inference server's
 // /search endpoint. rank/gap are computed by inference; the API server only
 // needs faiss_id + score to aggregate to cattle level.
+//
+// LightglueNumMatches/LightglueMatchRatio (top-K re-ranking, additive — see
+// pipeline/rerank.py) are this candidate's OWN LightGlue evidence, distinct
+// from the top-level LightglueChecked/LightglueNumMatches/LightglueZone
+// fields on SearchResponse below (which still describe query vs. the
+// single top-1 candidate, the original demote-only tiebreaker). Both nil
+// when inference didn't have a cached crop to compare this candidate
+// against, or the reranker didn't run — callers must treat that as "no
+// opinion" for this candidate, exactly like the top-level fields.
 type SearchMatch struct {
-	FaissID int64   `json:"faiss_id"`
-	Score   float64 `json:"score"`
-	Rank    int     `json:"rank"`
-	Gap     float64 `json:"gap"`
+	FaissID             int64    `json:"faiss_id"`
+	Score               float64  `json:"score"`
+	Rank                int      `json:"rank"`
+	Gap                 float64  `json:"gap"`
+	LightglueNumMatches *int     `json:"lightglue_num_matches"`
+	LightglueMatchRatio *float64 `json:"lightglue_match_ratio"`
 }
 
 type SearchResponse struct {

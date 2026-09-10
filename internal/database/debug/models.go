@@ -82,6 +82,51 @@ func (s *JSONStrings) Scan(src any) error {
 	return json.Unmarshal(raw, s)
 }
 
+// LightglueCandidateEvidence is one top-K embedding candidate's raw score
+// plus its LightGlue re-rank evidence, as computed for a single search (see
+// go-apiserver's rerankByLightglue and inference_server's pipeline/rerank.py).
+// Stored as a JSONB array on animal_search_records so a past search's full
+// per-candidate picture — not just the decided top-1 — can be pulled up
+// later for recalibration. LightglueNumMatches/LightglueMatchRatio/
+// LightglueRank are all nil for a candidate with no cached crop to compare
+// against (see MUZZLE_CROP_CACHE_DIR's coverage gap) — that is the expected,
+// common case for animals registered before the LightGlue feature cache
+// shipped, not a data-quality problem to flag.
+type LightglueCandidateEvidence struct {
+	GodhaarID           string   `json:"godhaar_id"`
+	FaissID             int64    `json:"faiss_id"`
+	EmbeddingScore      float64  `json:"embedding_score"`
+	EmbeddingRank       int      `json:"embedding_rank"`
+	LightglueNumMatches *int     `json:"lightglue_num_matches"`
+	LightglueMatchRatio *float64 `json:"lightglue_match_ratio"`
+	LightglueRank       *int     `json:"lightglue_rank"`
+	CombinedRank        int      `json:"combined_rank"`
+}
+
+// LightglueCandidates is a jsonb array column — nil (-> SQL NULL) when the
+// reranker never ran for this search (fewer than 2 candidates, or no
+// candidate had any LightGlue evidence at all).
+type LightglueCandidates []LightglueCandidateEvidence
+
+func (c LightglueCandidates) Value() (driver.Value, error) {
+	if c == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(c)
+	if err != nil {
+		return nil, fmt.Errorf("marshal jsonb: %w", err)
+	}
+	return string(b), nil
+}
+
+func (c *LightglueCandidates) Scan(src any) error {
+	raw, err := jsonBytes(src)
+	if err != nil || raw == nil {
+		return err
+	}
+	return json.Unmarshal(raw, c)
+}
+
 func jsonBytes(src any) ([]byte, error) {
 	switch v := src.(type) {
 	case nil:
@@ -128,8 +173,11 @@ type CreateSearchRecord struct {
 	ErrorCode      *string     `db:"error_code"`
 	ImageKeys      JSONStrings `db:"image_keys"`
 	Detail         JSONMap     `db:"detail"`
-	CreatedBy      string      `db:"created_by"`
-	CreatedByEmail string      `db:"created_by_email"`
+	// LightglueCandidates is the full top-K per-candidate re-rank evidence —
+	// see its type doc comment. Nil (-> SQL NULL) when the reranker never ran.
+	LightglueCandidates LightglueCandidates `db:"lightglue_candidates"`
+	CreatedBy           string              `db:"created_by"`
+	CreatedByEmail      string              `db:"created_by_email"`
 }
 
 // RegistrationFailureRow is one failure in full, for the detail view.
