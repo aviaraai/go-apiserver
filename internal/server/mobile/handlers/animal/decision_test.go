@@ -1,6 +1,7 @@
 package animal
 
 import (
+	"math"
 	"math/rand"
 	"sort"
 	"strings"
@@ -367,6 +368,140 @@ func TestLightglueNilIsNoOp(t *testing.T) {
 	}
 }
 
+// independentRawGap hand-derives the true nearest-rival gap for godhaarID
+// from byRawScore, WITHOUT reusing any of applyLightglueRerank's or
+// rerankByLightglue's own gap-computation logic — written from scratch here
+// so this check cannot share the bug it exists to catch. Mirrors decide()'s
+// own single-direction convention: a candidate's gap is its own raw score
+// minus the next-lower entry once everything is sorted by raw score
+// descending; no rival below (the singleton case) means gap 0, exactly
+// like decide()'s own secondScore-defaults-to-top.Adjusted convention.
+func independentRawGap(byRawScore []rankedAnimal, godhaarID string) float64 {
+	sorted := make([]rankedAnimal, len(byRawScore))
+	copy(sorted, byRawScore)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Score > sorted[j].Score })
+
+	idx := -1
+	var ownScore float64
+	for i, r := range sorted {
+		if r.GodhaarID == godhaarID {
+			idx = i
+			ownScore = r.Score
+			break
+		}
+	}
+	if idx == -1 || idx == len(sorted)-1 {
+		return 0.0
+	}
+	return ownScore - sorted[idx+1].Score
+}
+
+// Executed, real-numbers proof of a confirmed false-MATCH vulnerability:
+// applyLightglueRerank used to compute Gap against reranked[1] — whoever
+// LightGlue's FUSED ranking placed second — instead of against the
+// promoted candidate's true nearest rival on raw embedding score. A
+// candidate with no cached LightGlue crop (the common case:
+// MUZZLE_CROP_CACHE_DIR only covers animals registered after that cache
+// shipped) could be skipped over in the fused ranking by a candidate that
+// merely had SOME LightGlue evidence, however weak — even if that
+// evidence-bearing candidate was nowhere near the promoted candidate on
+// raw score, and the promoted candidate's REAL closest rival (a case with
+// no cached crop either) sat right next to it in raw score, un-consulted.
+//
+// This scenario reproduces exactly that: C (raw score 0.25, strong
+// LightGlue evidence, no cached crop) has D (0.24 — a textbook near-twin,
+// true gap 0.01) as its real nearest rival, but D has no cached LightGlue
+// evidence. E (0.05, weak raw score, second-best LightGlue evidence) is
+// what the buggy code used as "second place" instead, reporting a gap of
+// 0.20 — comfortably clearing gapThreshold=0.08 — for a candidate whose
+// true separation from its actual closest competitor is 0.01, exactly the
+// case this whole decision engine exists to keep out of auto-MATCH.
+func TestLightglueRerankGapUsesRawRival(t *testing.T) {
+	scores := map[string]float64{
+		"A": 0.90, // best raw score, no cached LightGlue crop
+		"B": 0.85, // no evidence
+		"C": 0.25, // weak raw score, but strong LightGlue evidence
+		"D": 0.24, // C's TRUE nearest rival on raw score (gap 0.01) — no cached crop
+		"E": 0.05, // very weak raw score, second-best LightGlue evidence
+	}
+	ratioC, numC := 0.90, 800
+	ratioE, numE := 0.40, 300
+
+	ranked := rankCandidates(scores, map[string]animalAttributes{}, queryAttributes{})
+	v := decide(ranked)
+	if v.Decision != "REVIEW" || v.GodhaarID == nil || *v.GodhaarID != "A" {
+		t.Fatalf("test setup is wrong, not the fix: raw decision = %s/%v, want REVIEW/A", v.Decision, v.GodhaarID)
+	}
+
+	byRawScore := make([]rankedAnimal, len(ranked))
+	copy(byRawScore, ranked)
+	sort.Slice(byRawScore, func(i, j int) bool { return byRawScore[i].Score > byRawScore[j].Score })
+
+	evidence := map[string]lightglueEvidence{
+		"C": {MatchRatio: &ratioC, NumMatches: &numC},
+		"E": {MatchRatio: &ratioE, NumMatches: &numE},
+		// A, B, D deliberately carry no evidence — no cached crop.
+	}
+
+	// Confirm the vulnerability's mechanism is real and still fires:
+	// rerankByLightglue (untouched by this fix, and correctly so — the RRF
+	// combination itself was never the bug) does put C on top, exactly as
+	// the exploit needs. If this ever stops being true the rest of the
+	// test proves nothing, so it must hold before anything else is checked.
+	reranked := rerankByLightglue(byRawScore, evidence)
+	if reranked[0].GodhaarID != "C" {
+		t.Fatalf("test setup is wrong, not the fix: rerankByLightglue's top = %s, want C", reranked[0].GodhaarID)
+	}
+
+	// The bug, confirmed present before this fix (git-stash-verified against
+	// the pre-fix code): reranked[1] is E (score 0.05, second-best LightGlue
+	// evidence) purely because D has no cached crop, giving a WRONG gap of
+	// 0.25-0.05=0.20 — comfortably over gapThreshold — and a false MATCH.
+	buggyGap := round6(reranked[0].Score - reranked[1].Score)
+	if math.Abs(buggyGap-0.20) > 1e-9 {
+		t.Fatalf("test setup is wrong, not the fix: reranked[1] gap = %v, want 0.20 (E, not D)", buggyGap)
+	}
+
+	// C's TRUE nearest rival, independently derived from raw scores alone
+	// (no shared code with applyLightglueRerank/rerankByLightglue): D, gap
+	// 0.01 — a textbook near-twin, nowhere close to gapThreshold=0.08.
+	trueGapForC := round6(independentRawGap(byRawScore, "C"))
+	if math.Abs(trueGapForC-0.01) > 1e-9 {
+		t.Fatalf("test setup is wrong, not the fix: independently-derived true gap for C = %v, want 0.01", trueGapForC)
+	}
+
+	out := applyLightglueRerank(v, byRawScore, evidence)
+
+	// The fix: whatever applyLightglueRerank actually returns, its Gap must
+	// match the RETURNED candidate's true raw-score-rival gap — computed
+	// completely independently here, not reused from decision.go's own
+	// logic. (With the true gap for C capped at 0.01, C's own best possible
+	// decision is REVIEW, confidence()==1 — no MORE confident than the
+	// v.Decision=REVIEW this scenario already had, so applyLightglueRerank's
+	// pre-existing "don't swap to a same-or-worse verdict" rule — untouched
+	// by this fix — correctly leaves the verdict on A. That is itself part
+	// of what closes this vulnerability: with the gap corrected, C can
+	// never look more confident than the candidate already standing, so no
+	// swap to the wrong animal happens at all, not even a safe-looking one.)
+	if out.GodhaarID == nil {
+		t.Fatalf("out.GodhaarID is nil")
+	}
+	wantGap := round6(independentRawGap(byRawScore, *out.GodhaarID))
+	if out.Gap != wantGap {
+		t.Errorf("Gap = %v for candidate %s, want the independently-derived true nearest-rival gap %v",
+			out.Gap, *out.GodhaarID, wantGap)
+	}
+
+	if out.Decision == "MATCH" {
+		t.Errorf("Decision = MATCH — C's real nearest rival (D) is only 0.01 away, exactly the "+
+			"near-twin case this engine must not auto-confirm; got GodhaarID=%s score=%v gap=%v",
+			*out.GodhaarID, out.Score, out.Gap)
+	}
+	if out.Decision != "REVIEW" && out.Decision != "UNKNOWN" {
+		t.Errorf("Decision = %s, want REVIEW or UNKNOWN", out.Decision)
+	}
+}
+
 // The safety property applyLightglueRerank's doc comment states: (1) an
 // already-MATCH verdict is never touched, and (2) a candidate can only reach
 // a MORE confident decision than the original if its OWN raw score/gap
@@ -428,6 +563,16 @@ func TestLightglueRerankSafety(t *testing.T) {
 				t.Fatalf("trial %d: promoted decision %s does not match classify(%.4f, %.4f)=%s — "+
 					"the promoted candidate did not independently clear its own bar",
 					trial, out.Decision, out.Score, out.Gap, wantDecision)
+			}
+			// Closes the actual bug class (TestLightglueRerankGapUsesRawRival
+			// pins the concrete exploit): out.Gap must match the promoted
+			// candidate's TRUE nearest-rival gap on raw score, independently
+			// hand-derived from byRawScore here — not merely self-consistent
+			// with whatever Gap applyLightglueRerank happened to compute.
+			wantGap := round6(independentRawGap(byRawScore, *out.GodhaarID))
+			if out.Gap != wantGap {
+				t.Fatalf("trial %d: promoted candidate %s Gap = %v, want independently-derived "+
+					"true raw-score rival gap %v", trial, *out.GodhaarID, out.Gap, wantGap)
 			}
 		} else {
 			sameOrLessConfident++

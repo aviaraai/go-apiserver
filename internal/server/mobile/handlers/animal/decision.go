@@ -605,9 +605,36 @@ func applyLightglueRerank(v verdict, byRawScore []rankedAnimal, evidence map[str
 		return v // rerank agreed with the existing pick — nothing changes
 	}
 
+	// Gap MUST be measured against newTop's true nearest rival on RAW
+	// EMBEDDING SCORE, not against reranked[1] (whoever LightGlue's fused
+	// ranking happens to place second). rerankByLightglue's ordering is
+	// driven by which candidates have cached LightGlue evidence at all —
+	// a candidate with no cached crop can be pushed out of second place by
+	// one that merely has SOME evidence, even weak evidence, letting a
+	// promoted candidate report a gap against a rival it was never close
+	// to on the signal that actually authorizes MATCH. byRawScore is
+	// sorted by Score descending, so the true rival is simply the next
+	// entry after newTop's own position in THAT ordering — found by
+	// scanning for it, not by trusting its index in `reranked`.
+	//
+	// No rival at all (newTop is the only candidate in byRawScore) leaves
+	// newSecond at newTop.Score, so newGap comes out to exactly 0 — the
+	// same convention decide() already uses for a singleton list
+	// (secondScore defaults to top.Adjusted itself), and the same reason:
+	// a lone candidate can never manufacture a gap it hasn't earned, so it
+	// can reach REVIEW at best, never a clean MATCH, until a real rival
+	// exists to be safely ahead of.
 	newSecond := newTop.Score
-	if len(reranked) > 1 {
-		newSecond = reranked[1].Score
+	foundNewTop := false
+	for _, r := range byRawScore {
+		if r.GodhaarID == newTop.GodhaarID {
+			foundNewTop = true
+			continue
+		}
+		if foundNewTop {
+			newSecond = r.Score
+			break
+		}
 	}
 	newGap := newTop.Score - newSecond
 	newDecision, newReason := classify(newTop.Score, newGap)
