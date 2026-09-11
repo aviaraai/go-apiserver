@@ -123,14 +123,26 @@ const (
 //
 // 100, measured 2026-09-11 against split_hash
 // 1574f9bc96497e002209c475a9aea631ed89010a63a0cf29521de7cbe8a81dc0 —
-// the clean identity-disjoint benchmark (70 animals / 210 queries, K=20
-// candidate sets, uncontaminated encoders). Full sweep in
+// the clean identity-disjoint benchmark (70 animals / 210 queries,
+// uncontaminated encoders). Full sweep in
 // inference_server/results/fusion_rule_sweep_1574f9bc.json.
 //
-//	                     ResNet50   DINOv2
-//	no rerank             0.8619    0.8381
-//	RRF (what shipped)    0.8714    0.8190   <- WORSE than no rerank on DINOv2
-//	margin M=100          0.9333    0.9095
+// Measured at BOTH candidate-set widths, because the sweep was first run at
+// K=20 while this path actually sees searchTopK=10 (routes.go) — a gap worth
+// closing rather than assuming away, since a promotion of a candidate sitting
+// at rank 11-20 is invisible to production:
+//
+//	                     K=10 (what production runs)   K=20
+//	                     ResNet50   DINOv2             ResNet50   DINOv2
+//	no rerank             0.8619    0.8381              0.8619    0.8381
+//	RRF (what shipped)    0.8762    0.8333              0.8714    0.8190
+//	margin M=100          0.9286    0.9048              0.9333    0.9095
+//
+// The gate loses 0.48 points (one query per encoder) going from K=20 down to
+// K=10 — inside the +/-2.4 standard error, and it still clears +6.67 on both
+// encoders at the width production uses. DINOv2 keeps its zero-broken
+// property at K=10 (14 fixed, 0 broken). So the number below is validated at
+// the deployed K, not extrapolated to it.
 //
 // Chosen over the neighbouring M values because it was selected by tuning on
 // one half of the animals and held up on the untuned half (+6.67 / +5.71),
