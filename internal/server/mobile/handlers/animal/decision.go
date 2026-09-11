@@ -116,6 +116,35 @@ const (
 	gapThreshold    = 0.08
 )
 
+// promotionMargin is how far ahead, in absolute LightGlue match count, a
+// candidate must be over the embedding's own rank-1 pick before the rerank
+// is allowed to promote it. Below this the embedding ordering is left
+// completely untouched.
+//
+// 100, measured 2026-09-11 against split_hash
+// 1574f9bc96497e002209c475a9aea631ed89010a63a0cf29521de7cbe8a81dc0 —
+// the clean identity-disjoint benchmark (70 animals / 210 queries, K=20
+// candidate sets, uncontaminated encoders). Full sweep in
+// inference_server/results/fusion_rule_sweep_1574f9bc.json.
+//
+//	                     ResNet50   DINOv2
+//	no rerank             0.8619    0.8381
+//	RRF (what shipped)    0.8714    0.8190   <- WORSE than no rerank on DINOv2
+//	margin M=100          0.9333    0.9095
+//
+// Chosen over the neighbouring M values because it was selected by tuning on
+// one half of the animals and held up on the untuned half (+6.67 / +5.71),
+// it breaks 0 queries on DINOv2 and 1 on ResNet50 where RRF breaks 12 and 15,
+// and the same 100 transfers across both encoders — each encoder scores
+// exactly its own best under the other's chosen value.
+//
+// n=210, so the standard error on top-1 near 0.86 is about +/-2.4 points;
+// the margin gate's gain clears that, RRF's does not. Re-measure against a
+// fresh split before moving this — a match count is not comparable across a
+// change to LIGHTGLUE_MAX_DIM, the DISK keypoint budget, or the crop
+// pipeline, all of which change what a "match" is worth.
+const promotionMargin = 100
+
 // attributeWeight bounds how far attribute agreement can move a score.
 //
 // It is small on purpose. The colour and horn classifiers are not reliable
@@ -464,6 +493,74 @@ func rerankByLightglue(byRawScore []rankedAnimal, evidence map[string]lightglueE
 	return out
 }
 
+// promoteByMargin picks the candidate the rerank should put at rank-1, using
+// an absolute LightGlue match-count margin instead of reciprocal rank fusion.
+//
+// It returns the index INTO byRawScore of the candidate to promote, or -1 for
+// "do not promote", in which case the caller must leave the embedding
+// ordering completely untouched. Returning an index rather than a reordered
+// slice is deliberate: there is no reordering to do in the negative case, so
+// there is no opportunity to accidentally perturb the ordering.
+//
+// Why this replaced rerankByLightglue's RRF: RRF discards magnitude. It ranks
+// candidates against each other and fuses positions, so a candidate that beats
+// the embedding's pick by 3 matches is treated exactly like one that beats it
+// by 300. Measured on the clean benchmark (see promotionMargin), that cost
+// more than it gained — on the production DINOv2 encoder RRF scored BELOW
+// doing nothing at all, breaking 15 queries to fix 11. The margin gate fires
+// far less often and is right far more often when it does.
+//
+// Missing evidence: a candidate whose NumMatches is nil had no LightGlue run
+// against it at all — no cached crop, or extraction failed. Such a candidate
+// is skipped entirely as a promotion TARGET, and, critically, is never read
+// as 0 matches. Treating nil as 0 would be actively dangerous here: if the
+// embedding's own rank-1 has no evidence, a 0 baseline would let any
+// candidate with at least promotionMargin matches clear the gate on the
+// strength of a number the missing side never actually lost. So when the
+// embedding's rank-1 has no evidence there is no baseline to measure a margin
+// against, and nothing is promoted.
+//
+// Ties: if two or more candidates share the highest match count, nothing is
+// promoted. A tie means the evidence does not distinguish them, and promoting
+// the lower-indexed one would silently make the embedding's arbitrary
+// ordering the tiebreaker on a signal that expressed no preference.
+func promoteByMargin(byRawScore []rankedAnimal, evidence map[string]lightglueEvidence) int {
+	if len(byRawScore) < 2 {
+		return -1
+	}
+
+	// Baseline: the embedding's own rank-1. No evidence on it -> no baseline.
+	base, ok := evidence[byRawScore[0].GodhaarID]
+	if !ok || base.NumMatches == nil {
+		return -1
+	}
+	baseMatches := *base.NumMatches
+
+	bestIdx, bestMatches, tied := -1, 0, false
+	for i, r := range byRawScore {
+		ev, ok := evidence[r.GodhaarID]
+		if !ok || ev.NumMatches == nil {
+			continue // never a promotion target, never counted as 0
+		}
+		switch n := *ev.NumMatches; {
+		case bestIdx == -1 || n > bestMatches:
+			bestIdx, bestMatches, tied = i, n, false
+		case n == bestMatches:
+			tied = true
+		}
+	}
+
+	if bestIdx <= 0 || tied {
+		// bestIdx == 0: LightGlue agrees with the embedding, nothing to do.
+		// bestIdx == -1: no candidate carried usable evidence.
+		return -1
+	}
+	if bestMatches-baseMatches < promotionMargin {
+		return -1
+	}
+	return bestIdx
+}
+
 // lightglueRankIndex 1-indexes byRawScore's entries by LightGlue match_ratio
 // descending (ties by NumMatches descending) — the same ordering
 // rerankByLightglue computes internally, exposed here so callers that only
@@ -599,10 +696,22 @@ func applyLightglueRerank(v verdict, byRawScore []rankedAnimal, evidence map[str
 		return v
 	}
 
-	reranked := rerankByLightglue(byRawScore, evidence)
-	newTop := reranked[0]
+	// Absolute-margin gate, replacing the RRF fusion this used to call.
+	// rerankByLightglue is deliberately left in the file, unused by the live
+	// path, so this decision stays reversible and its replacement documented
+	// — see promotionMargin and promoteByMargin for the measured reason.
+	//
+	// The gate either names one candidate to promote or declines. When it
+	// declines there is no reordering at all: this returns the verdict decide()
+	// already produced, byte for byte, which is what makes "gate did not fire"
+	// and "rerank is switched off" indistinguishable downstream.
+	promoteIdx := promoteByMargin(byRawScore, evidence)
+	if promoteIdx < 0 {
+		return v
+	}
+	newTop := byRawScore[promoteIdx]
 	if v.GodhaarID != nil && newTop.GodhaarID == *v.GodhaarID {
-		return v // rerank agreed with the existing pick — nothing changes
+		return v // gate picked what decide() already had — nothing changes
 	}
 
 	// Gap MUST be measured against newTop's true nearest rival on RAW

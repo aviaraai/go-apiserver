@@ -1,6 +1,7 @@
 package animal
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"sort"
@@ -598,6 +599,337 @@ func TestRankingIsDeterministicOnTies(t *testing.T) {
 		if ranked[0].GodhaarID != "a" || ranked[1].GodhaarID != "b" || ranked[2].GodhaarID != "c" {
 			t.Fatalf("unstable tie ordering: %s, %s, %s",
 				ranked[0].GodhaarID, ranked[1].GodhaarID, ranked[2].GodhaarID)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// promoteByMargin — the absolute-margin gate that replaced RRF in the live
+// rerank path (see promotionMargin for the measurement that chose 100).
+//
+// Every expectation below is derived by hand from the table's own inputs.
+// Nothing here asserts that the implementation agrees with itself, which is
+// precisely how the 5,000-trial sweep managed to miss the f672586 bug: it
+// re-derived the gap using the same logic it was checking.
+// ---------------------------------------------------------------------------
+
+// mkEvidence builds an evidence map from match counts. A nil count means the
+// candidate had no LightGlue run against it at all (no cached crop), which is
+// NOT the same as zero matches.
+func mkEvidence(counts map[string]*int) map[string]lightglueEvidence {
+	ev := make(map[string]lightglueEvidence, len(counts))
+	for id, n := range counts {
+		ev[id] = lightglueEvidence{NumMatches: n}
+	}
+	return ev
+}
+
+func iptr(n int) *int { return &n }
+
+func byRawFrom(scores map[string]float64) []rankedAnimal {
+	ranked := rankCandidates(scores, map[string]animalAttributes{}, queryAttributes{})
+	out := make([]rankedAnimal, len(ranked))
+	copy(out, ranked)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Score != out[j].Score {
+			return out[i].Score > out[j].Score
+		}
+		return out[i].GodhaarID < out[j].GodhaarID
+	})
+	return out
+}
+
+func TestPromoteByMarginTable(t *testing.T) {
+	cases := []struct {
+		name    string
+		scores  map[string]float64
+		counts  map[string]*int
+		wantID  string // "" means: do not promote
+		because string
+	}{
+		{
+			// (a) boundary: B beats A by exactly promotionMargin (100).
+			// 150-50 = 100, and the gate is >=, so this promotes.
+			name:    "margin exactly at threshold promotes",
+			scores:  map[string]float64{"A": 0.90, "B": 0.30},
+			counts:  map[string]*int{"A": iptr(50), "B": iptr(150)},
+			wantID:  "B",
+			because: "150-50 = 100 = promotionMargin, gate is >=",
+		},
+		{
+			// (a) one below the boundary: 149-50 = 99 < 100.
+			name:    "margin one below threshold does not promote",
+			scores:  map[string]float64{"A": 0.90, "B": 0.30},
+			counts:  map[string]*int{"A": iptr(50), "B": iptr(149)},
+			wantID:  "",
+			because: "149-50 = 99 < promotionMargin",
+		},
+		{
+			// (f) tie at the top: B and C both hold 200. The evidence
+			// expresses no preference, so neither is promoted even though
+			// both clear the margin against A.
+			name:    "tie in top match count does not promote",
+			scores:  map[string]float64{"A": 0.90, "B": 0.30, "C": 0.20},
+			counts:  map[string]*int{"A": iptr(10), "B": iptr(200), "C": iptr(200)},
+			wantID:  "",
+			because: "B and C tie at 200; a tie is not a preference",
+		},
+		{
+			// (e) the embedding's own rank-1 has no evidence, so there is no
+			// baseline to measure a margin against. Treating A as 0 would
+			// hand B a 500-match margin it never earned against a real number.
+			name:    "no evidence on embedding rank-1 blocks promotion",
+			scores:  map[string]float64{"A": 0.90, "B": 0.30},
+			counts:  map[string]*int{"A": nil, "B": iptr(500)},
+			wantID:  "",
+			because: "A has no baseline; nil must not be read as 0",
+		},
+		{
+			// A candidate with no evidence is never a promotion target.
+			name:    "candidate without evidence is never promoted",
+			scores:  map[string]float64{"A": 0.90, "B": 0.30},
+			counts:  map[string]*int{"A": iptr(10), "B": nil},
+			wantID:  "",
+			because: "B carries no evidence at all",
+		},
+		{
+			// LightGlue's best IS the embedding's rank-1: nothing to do.
+			name:    "lightglue agrees with embedding, no promotion",
+			scores:  map[string]float64{"A": 0.90, "B": 0.30},
+			counts:  map[string]*int{"A": iptr(400), "B": iptr(10)},
+			wantID:  "",
+			because: "A is already rank-1 on both signals",
+		},
+		{
+			// (h) singleton list: nothing can outrank the only candidate.
+			name:    "singleton candidate list",
+			scores:  map[string]float64{"A": 0.90},
+			counts:  map[string]*int{"A": iptr(900)},
+			wantID:  "",
+			because: "len(byRawScore) < 2",
+		},
+		{
+			// Promotion from deep in the list, not just rank-2.
+			name:   "promotes from deep in the candidate list",
+			scores: map[string]float64{"A": 0.90, "B": 0.80, "C": 0.70, "D": 0.10},
+			counts: map[string]*int{
+				"A": iptr(20), "B": iptr(30), "C": iptr(25), "D": iptr(400),
+			},
+			wantID:  "D",
+			because: "400-20 = 380 >= 100 and D is the unique maximum",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			byRawScore := byRawFrom(tc.scores)
+			idx := promoteByMargin(byRawScore, mkEvidence(tc.counts))
+
+			got := ""
+			if idx >= 0 {
+				got = byRawScore[idx].GodhaarID
+			}
+			if got != tc.wantID {
+				t.Fatalf("promoteByMargin = %q (idx %d), want %q — %s", got, idx, tc.wantID, tc.because)
+			}
+			if idx >= len(byRawScore) {
+				t.Fatalf("returned index %d out of range for %d candidates", idx, len(byRawScore))
+			}
+		})
+	}
+}
+
+// (b) When the gate declines, applyLightglueRerank must return decide()'s
+// verdict completely unchanged — same ID, same score, same gap, same decision.
+// Compared field by field against a verdict computed with no evidence at all,
+// which is the definitional "rerank switched off" behaviour.
+func TestMarginGateNoFireIsIdenticalToNoRerank(t *testing.T) {
+	scores := map[string]float64{"A": 0.90, "B": 0.80, "C": 0.30}
+	byRawScore := byRawFrom(scores)
+	ranked := rankCandidates(scores, map[string]animalAttributes{}, queryAttributes{})
+	base := decide(ranked)
+
+	// 99 short of the margin, so the gate must decline.
+	evidence := mkEvidence(map[string]*int{"A": iptr(50), "B": iptr(60), "C": iptr(149)})
+	if idx := promoteByMargin(byRawScore, evidence); idx != -1 {
+		t.Fatalf("test setup wrong: gate fired (idx %d) when it should not", idx)
+	}
+
+	withEvidence := applyLightglueRerank(base, byRawScore, evidence)
+	noEvidence := applyLightglueRerank(base, byRawScore, map[string]lightglueEvidence{})
+
+	if !sameVerdict(withEvidence, noEvidence) {
+		t.Fatalf("gate declined but output differs from the no-rerank path:\n with = %+v\n none = %+v",
+			withEvidence, noEvidence)
+	}
+	if !sameVerdict(withEvidence, base) {
+		t.Fatalf("gate declined but output differs from decide()'s own verdict:\n got  = %+v\n want = %+v",
+			withEvidence, base)
+	}
+}
+
+// sameVerdict compares two verdicts field by field, dereferencing GodhaarID
+// so two verdicts naming the same animal through different pointers compare
+// equal. Written here rather than using == because verdict holds a pointer.
+func sameVerdict(a, b verdict) bool {
+	if (a.GodhaarID == nil) != (b.GodhaarID == nil) {
+		return false
+	}
+	if a.GodhaarID != nil && *a.GodhaarID != *b.GodhaarID {
+		return false
+	}
+	return a.Decision == b.Decision &&
+		a.Score == b.Score &&
+		a.AdjustedScore == b.AdjustedScore &&
+		a.Gap == b.Gap &&
+		a.Agreement == b.Agreement &&
+		a.Reason == b.Reason
+}
+
+// (c) + (d) The f672586 property, re-asserted against the margin gate.
+// C is promoted on LightGlue evidence. C's TRUE nearest rival on raw score is
+// D, which has no cached crop; E is a far weaker candidate that does. The gap
+// must be measured against D, independently derived by independentRawGap.
+func TestMarginGateGapUsesRawRivalNotEvidenceHolder(t *testing.T) {
+	scores := map[string]float64{
+		"A": 0.90, // embedding rank-1, has evidence (the margin baseline)
+		"B": 0.85, // no evidence
+		"C": 0.25, // promoted on evidence
+		"D": 0.24, // C's TRUE nearest raw rival — NO cached crop
+		"E": 0.05, // much weaker raw score, but DOES have evidence
+	}
+	byRawScore := byRawFrom(scores)
+	ranked := rankCandidates(scores, map[string]animalAttributes{}, queryAttributes{})
+	v := decide(ranked)
+	if v.Decision != "REVIEW" || v.GodhaarID == nil || *v.GodhaarID != "A" {
+		t.Fatalf("test setup wrong: decide() = %s/%v, want REVIEW/A", v.Decision, v.GodhaarID)
+	}
+
+	evidence := mkEvidence(map[string]*int{
+		"A": iptr(20),  // baseline
+		"C": iptr(800), // 800-20 = 780 >= 100, unique max -> promoted
+		"E": iptr(300), // has evidence but is not the max
+		// B and D deliberately carry none.
+	})
+
+	idx := promoteByMargin(byRawScore, evidence)
+	if idx < 0 || byRawScore[idx].GodhaarID != "C" {
+		t.Fatalf("test setup wrong: gate did not promote C (idx %d)", idx)
+	}
+
+	// Hand-derived, sharing no code with the function under test: sorted by
+	// raw score, C sits at 0.25 and the next entry below is D at 0.24.
+	wantGap := round6(0.25 - 0.24)
+	if got := round6(independentRawGap(byRawScore, "C")); math.Abs(got-wantGap) > 1e-9 {
+		t.Fatalf("independent gap for C = %v, want %v", got, wantGap)
+	}
+
+	// The gap a naive implementation would report by trusting the
+	// evidence-holding runner-up instead: C vs E = 0.20, over gapThreshold,
+	// i.e. a false MATCH. This must NOT be what comes out.
+	wrongGap := round6(0.25 - 0.05)
+
+	out := applyLightglueRerank(v, byRawScore, evidence)
+	if out.GodhaarID == nil || *out.GodhaarID != "C" {
+		// The gate promoted C, but classify() on the TRUE gap may leave the
+		// verdict no more confident than decide()'s, in which case the
+		// original verdict is correctly kept. Either outcome is acceptable;
+		// what is not acceptable is C being reported with the inflated gap.
+		if math.Abs(out.Gap-wrongGap) < 1e-9 {
+			t.Fatalf("verdict kept %v but carries C-vs-E's inflated gap %v", out.GodhaarID, out.Gap)
+		}
+		return
+	}
+	if math.Abs(out.Gap-wrongGap) < 1e-9 {
+		t.Fatalf("REGRESSION of f672586: gap measured against E (%v), not C's true rival D", out.Gap)
+	}
+	if math.Abs(out.Gap-wantGap) > 1e-9 {
+		t.Fatalf("gap = %v, want %v (C's true raw rival D)", out.Gap, wantGap)
+	}
+	if out.Decision == "MATCH" {
+		t.Fatalf("gap %v is below gapThreshold %v, MATCH must be impossible", out.Gap, gapThreshold)
+	}
+}
+
+// (g) The candidate list is bounded upstream by searchTopK, so the gate must
+// behave for lists both shorter and longer than that bound. The expectation is
+// derived from the inputs: Z is the unique maximum and clears the margin in
+// every case, so it must be promoted regardless of list length.
+func TestMarginGateAcrossCandidateListLengths(t *testing.T) {
+	for _, n := range []int{2, 3, searchTopK - 1, searchTopK, searchTopK + 5, 40} {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			scores := map[string]float64{}
+			counts := map[string]*int{}
+			for i := 0; i < n-1; i++ {
+				id := fmt.Sprintf("F%02d", i)
+				scores[id] = 0.90 - float64(i)*0.001
+				counts[id] = iptr(10)
+			}
+			scores["Z"] = 0.10 // worst raw score
+			counts["Z"] = iptr(500)
+
+			byRawScore := byRawFrom(scores)
+			if len(byRawScore) != n {
+				t.Fatalf("setup: %d candidates, want %d", len(byRawScore), n)
+			}
+			idx := promoteByMargin(byRawScore, mkEvidence(counts))
+			if idx < 0 || byRawScore[idx].GodhaarID != "Z" {
+				got := "none"
+				if idx >= 0 {
+					got = byRawScore[idx].GodhaarID
+				}
+				t.Fatalf("promoted %s, want Z (500-10 = 490 >= %d, unique max)", got, promotionMargin)
+			}
+		})
+	}
+}
+
+// The safety invariant from applyLightglueRerank's doc comment must still hold
+// under the margin gate: an existing MATCH is never revisited, and a promoted
+// candidate's reported gap is always its independently-derived true raw-score
+// gap. Randomised, but every expectation comes from independentRawGap rather
+// than from the code under test.
+func TestMarginGateSafetySweep(t *testing.T) {
+	rng := rand.New(rand.NewSource(20260911))
+	ids := []string{"A", "B", "C", "D", "E"}
+
+	for trial := 0; trial < 5000; trial++ {
+		scores := map[string]float64{}
+		counts := map[string]*int{}
+		for _, id := range ids {
+			scores[id] = rng.Float64()
+			if rng.Intn(3) == 0 {
+				counts[id] = nil // no cached crop
+			} else {
+				counts[id] = iptr(rng.Intn(600))
+			}
+		}
+		byRawScore := byRawFrom(scores)
+		ranked := rankCandidates(scores, map[string]animalAttributes{}, queryAttributes{})
+		v := decide(ranked)
+		evidence := mkEvidence(counts)
+		out := applyLightglueRerank(v, byRawScore, evidence)
+
+		if v.Decision == "MATCH" && !sameVerdict(out, v) {
+			t.Fatalf("trial %d: an existing MATCH was revisited\n in  = %+v\n out = %+v", trial, v, out)
+		}
+		if out.GodhaarID == nil {
+			continue
+		}
+		// Whoever is reported, the gap must equal that candidate's own
+		// independently-derived raw-score gap.
+		want := round6(independentRawGap(byRawScore, *out.GodhaarID))
+		if math.Abs(out.Gap-want) > 1e-9 {
+			t.Fatalf("trial %d: %s reported gap %v, independently-derived %v\n scores=%v",
+				trial, *out.GodhaarID, out.Gap, want, scores)
+		}
+		// A promotion can only ever be to a candidate the gate actually named.
+		if v.GodhaarID != nil && *out.GodhaarID != *v.GodhaarID {
+			idx := promoteByMargin(byRawScore, evidence)
+			if idx < 0 || byRawScore[idx].GodhaarID != *out.GodhaarID {
+				t.Fatalf("trial %d: verdict changed to %s but the gate did not name it (idx %d)",
+					trial, *out.GodhaarID, idx)
+			}
 		}
 	}
 }
