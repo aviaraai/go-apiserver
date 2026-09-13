@@ -442,6 +442,14 @@ func (h *Handler) search(c echo.Context) error {
 	v := verdict{Decision: "UNKNOWN", Reason: "no_candidates"}
 	var lgCandidates debugdb.LightglueCandidates
 
+	// inference_server's own verdict, translated into godhaar_ids. Declared out
+	// here for the same reason v is: with no candidates there was no inference
+	// call, so it stays nil and the response simply omits it. infRequestID is
+	// carried out alongside it so logs written after the block can still be
+	// correlated with the inference server's own request log.
+	var inferenceView *InferenceDecisionView
+	var infRequestID string
+
 	if len(nearby) > 0 {
 		// Build lookup tables from faiss_id: one row per embedding, 3 per
 		// cattle. The attribute table feeds the decision engine's colour/horn
@@ -556,6 +564,23 @@ func (h *Handler) search(c echo.Context) error {
 				CombinedRank:        view.CombinedRank,
 			}
 		}
+
+		// Translate inference_server's decision here, where faissToGodhaar is
+		// in scope. This does NOT replace v — the response's existing
+		// godhaar_id/decision/score still come from this service's own engine,
+		// so an app that has never heard of inference_decision is unaffected.
+		infRequestID = infResp.RequestID
+		if td := translateDecision(ctx, infResp.Decision, faissToGodhaar, infResp.RequestID); td != nil {
+			inferenceView = &InferenceDecisionView{
+				Decision:   td.Decision,
+				Reason:     td.Reason,
+				Score:      td.Score,
+				Gap:        td.Gap,
+				GodhaarID:  td.GodhaarID,
+				Candidates: td.GodhaarIDs,
+				Degraded:   td.Degraded,
+			}
+		}
 	}
 
 	captureErr := h.captureSearch(c, v, frontImg, muzzleImgs, lgCandidates)
@@ -590,12 +615,42 @@ func (h *Handler) search(c echo.Context) error {
 	}
 	slog.LogAttrs(ctx, slog.LevelInfo, "search result", attrs...)
 
+	// The decision thresholds were calibrated at 3 muzzle photos. Fewer is
+	// permitted (the endpoint accepts 1-3) but it is outside the calibration,
+	// and that must not pass silently — measured: 62.1% match rate at N=3
+	// against 45.8% at N=1, with false accepts going 0 -> 6 per 203.
+	muzzleCount := len(muzzleImgs)
+	var calibrationWarning *string
+	if muzzleCount < calibratedMuzzlePhotoCount {
+		w := fmt.Sprintf(
+			"search ran on %d muzzle photo(s); decision thresholds are calibrated for %d, "+
+				"so the match rate is lower and false accepts are higher than measured",
+			muzzleCount, calibratedMuzzlePhotoCount)
+		calibrationWarning = &w
+		slog.LogAttrs(ctx, slog.LevelWarn, "search below calibrated photo count",
+			slog.String("requestID", infRequestID),
+			slog.Int("muzzlePhotos", muzzleCount),
+			slog.Int("calibratedFor", calibratedMuzzlePhotoCount),
+			slog.String("decision", v.Decision),
+		)
+	}
+
 	return c.JSON(http.StatusOK, SearchResponse{
-		GodhaarID: responseGodhaarID(v),
-		Decision:  v.Decision,
-		Score:     v.Score,
+		GodhaarID:          responseGodhaarID(v),
+		Decision:           v.Decision,
+		Score:              v.Score,
+		InferenceDecision:  inferenceView,
+		MuzzlePhotoCount:   muzzleCount,
+		CalibrationWarning: calibrationWarning,
 	})
 }
+
+// calibratedMuzzlePhotoCount is the query size scripts/
+// calibrate_decision_thresholds.py measured against: 3 photos, median-
+// aggregated across queries (inference_server faiss_index.py:250) then maxed
+// across each animal's stored embeddings (routes.go's cattleScores, below).
+// A search with fewer is answered, but reports it.
+const calibratedMuzzlePhotoCount = 3
 
 // responseGodhaarID decides whether the client is told which animal came top.
 //

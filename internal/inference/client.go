@@ -104,6 +104,37 @@ type SearchResponse struct {
 	LightglueChecked    bool    `json:"lightglue_checked"`
 	LightglueNumMatches *int    `json:"lightglue_num_matches"`
 	LightglueZone       *string `json:"lightglue_zone"`
+
+	// Decision is inference_server's own verdict, computed by its ported
+	// decision engine (godhaar/decision.py). nil when that server predates the
+	// port or has it switched off — this field is additive on both sides, so a
+	// nil here means "inference did not decide", never "UNKNOWN".
+	//
+	// Its FaissID / FaissIDs are FAISS ids, which this service must translate
+	// to godhaar_ids before anything reaches the app — see
+	// translateDecision in the animal handler. An untranslated id would render
+	// a correct MATCH as "not registered".
+	Decision *InferenceDecision `json:"decision"`
+}
+
+// InferenceDecision mirrors godhaar/decision.py::Decision.
+//
+// The contract, per outcome:
+//
+//	MATCH   -> FaissID set, FaissIDs empty
+//	REVIEW  -> FaissIDs holds 1..REVIEW_TOP_K entries best-first, FaissID nil
+//	UNKNOWN -> both empty
+//
+// Never both. The thresholds behind it live in inference_server's
+// godhaar/config.py beside WHITENING_MODEL_PATH, because they are only valid
+// for that whitening artifact.
+type InferenceDecision struct {
+	Decision string  `json:"decision"`
+	Reason   string  `json:"reason"`
+	Score    float64 `json:"score"`
+	Gap      float64 `json:"gap"`
+	FaissID  *int64  `json:"faiss_id"`
+	FaissIDs []int64 `json:"faiss_ids"`
 }
 
 // registerEmbeddingCount is the number of muzzle embeddings a successful
