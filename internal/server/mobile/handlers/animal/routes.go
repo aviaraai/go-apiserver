@@ -615,6 +615,46 @@ func (h *Handler) search(c echo.Context) error {
 	}
 	slog.LogAttrs(ctx, slog.LevelInfo, "search result", attrs...)
 
+	// ── SHADOW COMPARISON ────────────────────────────────────────────────────
+	// The app reads v.Decision — this service's own engine, at decision.go's
+	// 0.22/0.16/0.08 with the attribute term. inference_server's engine runs in
+	// parallel at 0.20/0.20/0.20 and its verdict is carried as an advisory
+	// field. Authority has NOT moved; this log is what decides whether it
+	// should.
+	//
+	// Measured offline at the production policy (n=203, LightGlue disabled):
+	// 26.1% divergent, and switching would convert 42 CORRECT auto-confirmations
+	// into reviews to remove 1 false accept. That is a product decision, so it
+	// is being made against real traffic rather than one benchmark corpus —
+	// grep `shadow decision comparison` and compare `agree` rates and the
+	// `goDecision`/`inferenceDecision` pairs before anything switches.
+	if inferenceView != nil {
+		agree := v.Decision == inferenceView.Decision
+		shadowAttrs := []slog.Attr{
+			slog.String("requestID", infRequestID),
+			slog.Bool("agree", agree),
+			slog.String("goDecision", v.Decision),
+			slog.String("inferenceDecision", inferenceView.Decision),
+			slog.Float64("goScore", v.Score),
+			slog.Float64("goGap", v.Gap),
+			slog.Float64("inferenceScore", inferenceView.Score),
+			slog.Float64("inferenceGap", inferenceView.Gap),
+			slog.Bool("inferenceDegraded", inferenceView.Degraded),
+			slog.Int("muzzlePhotos", len(muzzleImgs)),
+		}
+		// Which animal each engine named, so a disagreement can be checked
+		// against the verification record rather than only counted.
+		if v.GodhaarID != nil {
+			shadowAttrs = append(shadowAttrs, slog.String("goTop", *v.GodhaarID))
+		}
+		if inferenceView.GodhaarID != nil {
+			shadowAttrs = append(shadowAttrs, slog.String("inferenceTop", *inferenceView.GodhaarID))
+		} else if len(inferenceView.Candidates) > 0 {
+			shadowAttrs = append(shadowAttrs, slog.String("inferenceTop", inferenceView.Candidates[0]))
+		}
+		slog.LogAttrs(ctx, slog.LevelInfo, "shadow decision comparison", shadowAttrs...)
+	}
+
 	// The decision thresholds were calibrated at 3 muzzle photos. Fewer is
 	// permitted (the endpoint accepts 1-3) but it is outside the calibration,
 	// and that must not pass silently — measured: 62.1% match rate at N=3
