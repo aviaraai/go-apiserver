@@ -1,89 +1,60 @@
-# go-apiserver — working notes
+# go-apiserver — codebase notes
 
 Go/Echo API server (`internal/server`) backing two clients: the Telangana
 mobile app (`/api/mobile/v1`) and the Godhaar analytics web dashboard
 (`/api/web/v1`, `internal/server/web/handlers/...`). Postgres via `sqlx`
 (`internal/database/...`), migrations in `migrations/` (goose).
 
-## Analytics dashboard latency: the `/analytics` query has zero supporting indexes
+## Muzzle search path
 
-Reported live: the Godhaar analytics dashboard (`godhaar_analytics_dashboard`
-repo) is slow. The frontend (`src/layouts/AnalyticsPanel.tsx`) was checked
-first and ruled out — it's deliberately careful: a `draft`/`applied` filter
-split so editing a filter never fires a request, `react-query` caching, no
-polling, and the heavy `getAnalytics()` call only fires on an explicit
-"Search" press (`enabled: applied !== null`), never on mount. The bottleneck
-is server-side.
+`internal/server/mobile/handlers/animal/routes.go` calls inference_server,
+then aggregates: **max across each animal's stored embeddings** (`cattleScores`,
+~line 498). inference_server already took the **median across the N query
+photos**. That pair is what the thresholds were calibrated on; changing either
+side invalidates them.
 
-**`AdminAnalytics` (`internal/database/analytics/repository.go:52`), which
-backs `GET /api/web/v1/analytics` — the dashboard's main Analytics tab —
-filters and groups on columns that have never had an index, on either of the
-two tables it touches:**
+`decide()` in `decision.go` produces the verdict the app reads. inference_server
+now returns its own decision in `inference_decision`; it is **shadow-logged
+only** and does not drive the response. `translate.go::translateDecision()`
+resolves `faiss_id` → `godhaar_id` — MATCH with an unmapped id degrades to
+UNKNOWN, REVIEW keeps whatever resolves.
 
-```sql
--- farmers subquery
-WHERE ($1::text IS NULL OR state = $1)
-  AND ($2::text IS NULL OR district = $2)
-  AND ($3::text IS NULL OR mandal = $3)
-  AND ($5::timestamptz IS NULL OR created_at >= $5)
-  AND ($6::timestamptz IS NULL OR created_at <  $6)
-GROUP BY created_by_email
--- animals subquery: same shape, plus a `breed` filter
-```
-...then a `FULL OUTER JOIN` of the two aggregated results on
-`created_by_email`.
+`calibratedMuzzlePhotoCount = 3`; fewer photos sets `CalibrationWarning`.
 
-Checked the actual schema, not assumed: `migrations/20260719174400_create_farmers.sql`
-and `20260719180622_create_animals.sql` only ever indexed `created_by`
-(`idx_farmers_created_by`/`idx_animals_created_by`) and `farmer_id`
-(`idx_animals_farmer_id`). `created_by_email` — a *different* column from
-`created_by`, added later by
-`migrations/20260802172155_add_created_updated_by_email_to_farmers.sql` /
-`20260802172202_..._to_animals.sql` (a plain `ALTER TABLE ... ADD COLUMN`,
-no index) — is the column `AdminAnalytics` **groups** by; the *filters* are
-on `state`/`district`/`mandal`/`created_at` (+`breed` on `animals`). None of
-those six columns (`state`, `district`, `mandal`, `breed`, `created_at`,
-`created_by_email`) have ever had an index, on either table. Every dashboard search — any
-filter combination, or none — forces a full sequential scan of both
-`farmers` and `animals`, a hash aggregate on each, then the join. This gets
-linearly worse as both tables grow, which is exactly a "used to be fine,
-now it's slow" symptom rather than a constant-cost bug.
+## Inference error contract
 
-**This is a real gap, not a guess extrapolated from nothing:** every *other*
-table in this schema has indexes matching its actual query patterns —
-`animal_search_records` has `(created_by, created_at DESC)`,
-`(decision, created_at DESC)`, a partial index on verified MATCHes, etc.
-(`migrations/20260806171616_create_animal_search_records.sql`);
-`animal_registration_failures` similarly
-(`migrations/20260806171527_create_animal_registration_failures.sql`);
-`cctv_video_analytics` has `(farmer_id, requested_at DESC)`. `farmers` and
-`animals` — the two core tables the whole app is built on — are the outlier:
-indexed only for their FK/ownership lookups (`created_by`, `farmer_id`),
-never for this analytics access pattern.
+`internal/inference/errors.go` (`domainCodes` / `domainResponses` /
+`perImageMessages`) and inference_server's `schema.ErrorCode` are **one
+contract and must change together** — adding a code is a two-repo change. A 4xx
+body from inference without an `error_code` is treated here as a contract fault,
+not a verdict, and never surfaces to the officer as one.
 
-Also checked and ruled out as contributing causes: no `SetMaxOpenConns`/
-`SetMaxIdleConns`/etc. call anywhere in `internal/database/database.go` —
-default Go `sql.DB` pool settings are in effect, not a likely bottleneck on
-their own; and `GET /analytics/totals` (`AdminTotalAnalytics`, two bare
-`COUNT(*)`s) is cached client-side for 15 minutes and called once per
-session, so it's a much smaller contributor than the filtered/grouped
-`AdminAnalytics` query re-run from scratch on every search.
+## Analytics dashboard latency (open, investigation only)
 
-**Not yet fixed — investigation only, as of this writing.** The fix is a
-migration adding index(es) covering `farmers`/`animals`' actual filter/group
-columns (`state`, `district`, `mandal`, `created_at`, `created_by_email` on
-both, plus `breed` on `animals`) — not a code change. Two things worth
-deciding before writing it, not guessing at:
-- Composite index shape should match the real filter combinations the
-  dashboard actually sends, not just index every column independently —
-  worth checking `FilterOptions.tsx`/`toSearchFilters` for which
-  combinations are actually reachable from the UI before choosing column
-  order.
-- The `($n::text IS NULL OR col = $n)` pattern used throughout this query is
-  itself a known Postgres planner anti-pattern — a plain btree index on
-  `col` is not guaranteed to be used for an `OR IS NULL` predicate the way
-  it would be for a plain `col = $n`. Confirm with `EXPLAIN ANALYZE` against
-  real data (both an unfiltered call and a filtered one) that a new index
-  actually gets picked up, rather than assuming CREATE INDEX alone closes
-  this — this exact class of "index exists but the planner doesn't use it"
-  mistake is worth ruling out explicitly, not assumed away.
+`AdminAnalytics` (`internal/database/analytics/repository.go:52`), behind
+`GET /api/web/v1/analytics`, filters on `state`/`district`/`mandal`/`created_at`
+(+`breed` on `animals`) and groups on `created_by_email`. **None of those six
+columns has an index on either table.** `farmers`/`animals` were only ever
+indexed for FK/ownership lookups (`created_by`, `farmer_id`);
+`created_by_email` was added later by a bare `ALTER TABLE ... ADD COLUMN`.
+Every dashboard search sequentially scans both tables, hash-aggregates each,
+then `FULL OUTER JOIN`s — cost grows with table size, which matches the
+"used to be fine" symptom.
+
+Every other table here is indexed for its real access pattern
+(`animal_search_records`, `animal_registration_failures`,
+`cctv_video_analytics`), so this is a gap, not the house style.
+
+Ruled out: the frontend (`AnalyticsPanel.tsx` only fires on an explicit Search
+press, `enabled: applied !== null`, with react-query caching and no polling);
+`/analytics/totals` (two bare `COUNT(*)`s, cached 15 min, once per session);
+connection pool (defaults, no `SetMaxOpenConns` anywhere, unlikely alone).
+
+Before writing the migration, two things to settle rather than guess:
+- Composite column order should match the filter combinations the UI can
+  actually reach (`FilterOptions.tsx` / `toSearchFilters`), not one index per
+  column.
+- The `($n::text IS NULL OR col = $n)` pattern is a known planner
+  anti-pattern — a plain btree index is not guaranteed to be used for
+  `OR IS NULL`. Confirm with `EXPLAIN ANALYZE` (filtered and unfiltered) that
+  a new index is actually picked up.
